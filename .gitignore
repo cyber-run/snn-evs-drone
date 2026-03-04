@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.venv/
+venv/
+*.pt
+*.pth
+*.ckpt
+results/
+events/data/
+*.mp4
+*.bag
+.DS_Store
