@@ -43,6 +43,7 @@ from pegasus.simulator.logic.graphical_sensors.monocular_camera import Monocular
 from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
 from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
 from pegasus.simulator.logic.backends.backend import Backend, BackendConfig
+from omni.isaac.core.objects import DynamicCuboid, FixedCuboid
 from scipy.spatial.transform import Rotation
 import cv2
 done("Imports complete")
@@ -103,7 +104,9 @@ class FrameCaptureBackend(Backend):
         pass
 
     def input_reference(self):
-        return [0.0, 0.0, 0.0, 0.0]
+        # Gentle constant thrust to maintain hover height while drifting forward
+        # Iris hover throttle ~568 rad/s per rotor
+        return [568.0, 568.0, 568.0, 568.0]
 
     def start(self):
         pass
@@ -127,6 +130,22 @@ def run_simulation():
     stage("Loading environment")
     pg.load_environment(SIMULATION_ENVIRONMENTS["Curved Gridroom"])
     done()
+
+    stage("Spawning obstacles")
+    obstacles = [
+        {"path": "/World/obstacle_0", "pos": np.array([ 2.0,  0.0, 1.0]), "scale": np.array([0.4, 0.4, 1.5])},
+        {"path": "/World/obstacle_1", "pos": np.array([ 3.5,  1.2, 0.8]), "scale": np.array([0.4, 0.4, 1.2])},
+        {"path": "/World/obstacle_2", "pos": np.array([ 5.0, -0.8, 1.2]), "scale": np.array([0.4, 0.4, 2.0])},
+    ]
+    for obs in obstacles:
+        world.scene.add(FixedCuboid(
+            prim_path=obs["path"],
+            name=obs["path"].split("/")[-1],
+            position=obs["pos"],
+            scale=obs["scale"],
+            color=np.array([0.8, 0.2, 0.2]),
+        ))
+    done(f"{len(obstacles)} obstacles spawned")
 
     stage("Spawning quadrotor with camera")
     backend = FrameCaptureBackend(FRAME_DIR, max_frames=NUM_STEPS)
