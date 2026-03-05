@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Setup script for neuromorphic drone project on a fresh GPU instance (Ubuntu 22.04, RTX GPU)
 # Run once after deployment: bash setup.sh
 set -e
