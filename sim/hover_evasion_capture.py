@@ -30,10 +30,12 @@ import os
 import argparse
 
 # ── Constants ─────────────────────────────────────────────────────────────────
+# Overridden at runtime by --name argument to support multiple profiles.
 
-FRAME_DIR  = "/tmp/sim_frames_evasion"
-META_DIR   = "/tmp/sim_meta_evasion"    # separate from frames so v2e ignores it
-EVENT_DIR  = "/tmp/sim_events_evasion"
+_BASE = "/tmp/evasion"
+FRAME_DIR  = f"{_BASE}_frames"
+META_DIR   = f"{_BASE}_meta"   # separate from frames so v2e ignores it
+EVENT_DIR  = f"{_BASE}_events"
 RESOLUTION = (346, 260)   # DAVIS346
 FPS        = 60
 SIM_DT     = 1.0 / FPS   # physics step matches camera rate
@@ -426,6 +428,10 @@ if __name__ == "__main__":
     parser.add_argument("--v2e-only", action="store_true",
                         help="Run v2e only (frames must already exist)")
 
+    # Per-run name: sets output dirs to /tmp/evasion_<name>_{frames,meta,events}
+    parser.add_argument("--name", default=None,
+                        help="Run name (e.g. 'head_on', 'lateral') — sets output dirs")
+
     # Approach profile (overrides manual settings if given)
     parser.add_argument("--profile", choices=list(PROFILES.keys()),
                         help="Named approach profile")
@@ -439,6 +445,13 @@ if __name__ == "__main__":
                         help="Approach speed in m/s (velocity aimed at drone)")
 
     args = parser.parse_args()
+
+    # Override output dirs based on --name (or auto-derive from --profile)
+    run_name = args.name or args.profile or "default"
+    globals()["FRAME_DIR"] = f"/tmp/evasion_{run_name}_frames"
+    globals()["META_DIR"]  = f"/tmp/evasion_{run_name}_meta"
+    globals()["EVENT_DIR"] = f"/tmp/evasion_{run_name}_events"
+    print(f"Output dirs: frames={FRAME_DIR}  meta={META_DIR}  events={EVENT_DIR}")
 
     if args.v2e_only:
         run_v2e(len([f for f in os.listdir(FRAME_DIR)
