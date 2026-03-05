@@ -272,8 +272,10 @@ def _run_eval(model, loader, device):
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}", flush=True)
+    ds = args.pool   # spatial downsample in encoder (replaces model's AvgPool2d)
     enc = EventEncoder(height=args.height, width=args.width,
-                       dt_us=args.dt_us, mode="binary")
+                       dt_us=args.dt_us, mode="binary",
+                       spatial_downsample=ds)
 
     augmentor = EventAugmentor() if args.augment else None
 
@@ -309,8 +311,8 @@ def train(args):
                      num_workers=nw, pin_memory=(device.type == "cuda"),
                      persistent_workers=(nw > 0)) if va else None)
 
-    model = LGMDNet(height=args.height, width=args.width,
-                    pool_factor=args.pool, tau_mem=args.tau).to(device)
+    model = LGMDNet(height=args.height // ds, width=args.width // ds,
+                    pool_factor=1, tau_mem=args.tau).to(device)
     np_ = sum(p.numel() for p in model.parameters())
     print(f"\nModel: {np_} trainable params  LIF_thresh={model.lgmd_lif.v_threshold}"
           f"  tau={args.tau}  exc_weight={args.exc_weight}", flush=True)
@@ -408,7 +410,7 @@ if __name__ == "__main__":
                    help="Enable on-the-fly data augmentation")
 
     # System
-    p.add_argument("--num_workers", type=int, default=4)
+    p.add_argument("--num_workers", type=int, default=2)
     p.add_argument("--save",   default="results/lgmd_weights.pt")
 
     train(p.parse_args())
