@@ -17,6 +17,7 @@ from pegasus.simulator.logic.backends.python_backend import PythonBackend
 
 from scipy.spatial.transform import Rotation
 import numpy as np
+from tqdm import tqdm
 
 NUM_STEPS = 500
 PRINT_EVERY = 100
@@ -73,7 +74,7 @@ def main():
     timeline.play()
 
     print(f"\nRunning {NUM_STEPS} steps (headless)...")
-    for i in range(NUM_STEPS):
+    for i in tqdm(range(NUM_STEPS), desc="Simulating", unit="step"):
         world.step(render=False)
 
     timeline.stop()
