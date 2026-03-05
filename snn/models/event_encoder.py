@@ -69,16 +69,22 @@ class EventEncoder:
         ys = events[:, 2].astype(np.int32)
         ps = events[:, 3].astype(np.int32)
 
-        # Assign each event to a bin
-        bin_idx = ((ts - t_start_us) / self.dt_us).astype(np.int32)
-        bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+        # Filter to time window first (avoids processing full array each call)
+        mask = (ts >= t_start_us) & (ts < t_end_us)
+        ts, xs, ys, ps = ts[mask], xs[mask], ys[mask], ps[mask]
 
-        # Clip pixel coordinates to valid range
-        xs = np.clip(xs, 0, self.width - 1)
-        ys = np.clip(ys, 0, self.height - 1)
+        if len(ts) > 0:
+            # Vectorised bin assignment
+            bin_idx = ((ts - t_start_us) / self.dt_us).astype(np.int32)
+            bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+            xs = np.clip(xs, 0, self.width - 1)
+            ys = np.clip(ys, 0, self.height - 1)
 
-        for i in range(len(events)):
-            frames[bin_idx[i], ps[i], ys[i], xs[i]] += 1.0
+            # Accumulate into frames without a Python loop
+            flat_idx = bin_idx * (2 * self.height * self.width) + \
+                       ps * (self.height * self.width) + \
+                       ys * self.width + xs
+            np.add.at(frames.ravel(), flat_idx, 1.0)
 
         if self.mode == "binary":
             frames = (frames > 0).astype(np.float32)

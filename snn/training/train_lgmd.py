@@ -48,29 +48,36 @@ class LoomingDataset(Dataset):
         n_bins: int = 20,         # time bins per sample
         stride_bins: int = 10,    # stride for sliding window
     ):
-        self.events = events
         self.encoder = encoder
         self.n_bins = n_bins
 
-        t_start = float(events[0, 0])
-        t_end = float(events[-1, 0])
+        # Pre-sort by timestamp and keep timestamps separately for fast searchsorted
+        order = np.argsort(events[:, 0], kind="stable")
+        self.events = events[order]
+        self.ts = self.events[:, 0].astype(np.float64)  # sorted timestamps
+
+        t_start = float(self.ts[0])
+        t_end = float(self.ts[-1])
         n_total_bins = int((t_end - t_start) / encoder.dt_us)
 
-        # Build list of (t_start_us, label_slice) for each window
+        # Pre-compute window boundaries as event-index slices (O(log N) per window)
         self.windows = []
         for i in range(0, n_total_bins - n_bins, stride_bins):
             ws_us = t_start + i * encoder.dt_us
             we_us = ws_us + n_bins * encoder.dt_us
             lbl = label[i:i + n_bins]
             if len(lbl) == n_bins:
-                self.windows.append((ws_us, we_us, lbl.copy()))
+                lo = int(np.searchsorted(self.ts, ws_us, side="left"))
+                hi = int(np.searchsorted(self.ts, we_us, side="left"))
+                self.windows.append((lo, hi, ws_us, we_us, lbl.copy()))
 
     def __len__(self):
         return len(self.windows)
 
     def __getitem__(self, idx):
-        ws_us, we_us, lbl = self.windows[idx]
-        frames = self.encoder.encode(self.events, t_start_us=ws_us, t_end_us=we_us)
+        lo, hi, ws_us, we_us, lbl = self.windows[idx]
+        # Pass only the events in this window — avoids scanning full array
+        frames = self.encoder.encode(self.events[lo:hi], t_start_us=ws_us, t_end_us=we_us)
         # frames: (T, 2, H, W)
         label_t = torch.from_numpy(lbl)   # (T,)
         return frames, label_t
