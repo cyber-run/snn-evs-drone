@@ -24,7 +24,7 @@ from omni.isaac.core.world import World
 from pegasus.simulator.params import ROBOTS, SIMULATION_ENVIRONMENTS
 from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
 from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
-from pegasus.simulator.logic.backends.python_backend import PythonBackend
+from pegasus.simulator.logic.backends.backend import Backend, BackendConfig
 from scipy.spatial.transform import Rotation
 import numpy as np
 from tqdm import tqdm
@@ -34,11 +34,11 @@ NUM_STEPS = 500
 PRINT_EVERY = 100
 
 
-class HoverBackend(PythonBackend):
+class HoverBackend(Backend):
     """Minimal backend — zero rotor commands so drone falls under gravity."""
 
     def __init__(self):
-        super().__init__()
+        super().__init__(config=BackendConfig())
         self.step_count = 0
 
     def update(self, dt: float):
@@ -51,11 +51,23 @@ class HoverBackend(PythonBackend):
     def update_sensor(self, sensor_type: str, data):
         pass
 
+    def update_graphical_sensor(self, sensor_type: str, data):
+        pass
+
     def update_state(self, state):
         pass
 
     def input_reference(self):
         return [0.0, 0.0, 0.0, 0.0]
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def reset(self):
+        self.step_count = 0
 
 
 def main():
