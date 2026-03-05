@@ -42,8 +42,8 @@ FPS        = 120          # camera + renderer Hz (physics runs at 250 Hz interna
 SIM_DT     = 1.0 / FPS   # simulated time per step
 
 DRONE_SPAWN   = [0.0, 0.0, 1.5]   # metres — hover target
-WARMUP_STEPS  = int(0.5 * FPS)    # 0.5 s warmup — just enough for physics to settle
-TOTAL_STEPS   = int(8.0 * FPS)    # 8 s total recording
+WARMUP_STEPS  = int(1.5 * FPS)    # 1.5 s warmup: physics settle + USD material propagation
+TOTAL_STEPS   = int(10.0 * FPS)   # 10 s total: 1.5s warmup + ~0.6s approach + 7.9s post
 
 # Obstacle half-extents used for angular velocity label computation
 # Obstacle scale below is 1.0 m (full side), so half-extent = 0.5 m
@@ -374,8 +374,9 @@ def run_simulation(args):
 
         world.step(render=True)
 
+    raw_traj_len = len(backend.drone_positions)
     done(f"Captured {backend.frame_count} frames  |  "
-         f"{len(backend.drone_positions)} trajectory points")
+         f"{raw_traj_len} trajectory points (raw physics rate)")
 
     # Save trajectory metadata to a separate directory so v2e doesn't read it as a frame
     os.makedirs(META_DIR, exist_ok=True)
@@ -383,7 +384,17 @@ def run_simulation(args):
     drone_pos_arr = np.array(backend.drone_positions, dtype=np.float32)
     obs_pos_arr   = np.array(backend.obstacle_positions, dtype=np.float32)
 
-    # Hover position: mean of first WARMUP_STEPS (before obstacle arrives)
+    # Pegasus calls backend.update() at the physics substep rate, which is a multiple
+    # of the render rate.  Subsample the trajectory down to the RENDER rate (TOTAL_STEPS
+    # points) so that traj[i] corresponds to frame i and sim_dt (= 1/FPS) is correct.
+    physics_factor = max(1, round(raw_traj_len / TOTAL_STEPS))
+    if physics_factor > 1:
+        tqdm.write(f"  Subsampling trajectory {physics_factor}× "
+                   f"({raw_traj_len} → {raw_traj_len // physics_factor} points)")
+        obs_pos_arr   = obs_pos_arr[::physics_factor]
+        drone_pos_arr = drone_pos_arr[::physics_factor]
+
+    # Hover position: mean of first WARMUP_STEPS render frames (before obstacle launches)
     stable_pos = drone_pos_arr[:WARMUP_STEPS].mean(axis=0)
 
     np.savez(meta_path,
@@ -393,7 +404,7 @@ def run_simulation(args):
              obstacle_radius=np.float32(OBSTACLE_HALF_SIZE),
              sim_dt=np.float32(SIM_DT),
              warmup_steps=np.int32(WARMUP_STEPS),
-             launch_step=np.int32(WARMUP_STEPS),      # exact step when obstacle started moving
+             launch_step=np.int32(WARMUP_STEPS),
              launch_velocity=launch_vel.astype(np.float32))
 
     done(f"Trajectory metadata saved to {meta_path}")

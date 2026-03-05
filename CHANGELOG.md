@@ -159,10 +159,35 @@ flawed in three ways, preventing any positive Pearson correlation from being lea
 
 ---
 
+### Training results (Session 3 run)
+
+All 5 profiles regenerated and training completed in ~5 min (300 epochs on L40S GPU).
+
+| Metric | Before (bad data) | After (fixed data) |
+|---|---|---|
+| Val ExCorr (held-out diagonal) | −0.105 | **+0.271** |
+| Val DcCorr (held-out diagonal) | −0.105 | **+0.293** |
+| Mean ExCorr (5 profiles) | −0.104 | **+0.277** |
+| Ex_loom / Ex_bg (head_on) | 0.01× | **2.8×** |
+| Ex_loom / Ex_bg (diagonal, val) | 0.01× | **23.3×** |
+| Best training ExCorr | stuck | **0.717 @ ep 105** |
+| Converged? | No | **Yes** |
+
+The model correctly responds more strongly to the looming phase than background
+across all five held-in and the held-out (diagonal) approach profile.
+
 ## Known Issues / Next Session
 
-- **Regenerate all H5 files** using the updated `hover_evasion_capture.py` (Black Gridroom + checkerboard texture + new speeds/warmup) before training — all previously generated data had textureless obstacles and dynamic-environment artifacts and should be discarded.
-- `sim_dt` stored in metadata is `1/FPS` (1/120) but actual trajectory sampling is ~1/240 (physics runs 2 substeps per render step); absolute dθ/dt scale is off by ~2×. Labels are normalised so training is unaffected, but worth fixing for future quantitative analysis.
-- Checkerboard texture applied via OmniPBR; if Isaac Sim USD binding fails at runtime the obstacle falls back to a solid light-grey colour (a warning is printed). Verify in first run.
-- Only 2 profiles (head_on, lateral) trained on so far — regenerate and train all 5 profiles for better generalisation.
+- **Trajectory double-sampling**: The training script now auto-detects and corrects this
+  (1922 raw physics points → correct dt=1/240s). The sim script will be updated to
+  subsample to render rate before saving in the next regeneration run.
+- **Pre-launch texture spike (head_on, t≈0.4s)**: Checkerboard texture activates visually
+  ~0.1s before the warmup ends, causing 416K-event background spike. Increasing warmup to
+  1.5s (already done in sim script, takes effect on next regeneration) will push this spike
+  safely into early warmup frames.
+- `head_on` profile shows weaker correlation (ExCorr=0.074) than other profiles — likely
+  due to the texture activation spike and the head-on approach producing a more symmetric
+  (hence harder to separate) event pattern.
 - No closed-loop evasion controller yet — LGMD output not wired to rotor commands.
+- Only window-level Pearson loss trained; per-timestep Pearson (used in evaluation) differs
+  slightly in scale, explaining the gap between training-log ExCorr (0.717) and eval ExCorr (0.277).

@@ -94,8 +94,12 @@ The core SNN architecture is modelled on the **Locust LGMD (Lobula Giant Movemen
 - [x] Fix label alignment: `dθ/dt` mapped via physical time axis (µs timestamps ↔ sim step × sim_dt)
 - [x] SNN model fixes: LIF v_threshold 0.5, `dcmd_weight` fixed buffer, `net_exc` auxiliary signal
 - [x] Training improvements: recording-level val split, combined Pearson loss, per-epoch validation metrics
-- [ ] **Regenerate all 5 profiles** with updated `hover_evasion_capture.py` and retrain
-- [ ] Validate: DCMD peaks during looming phase; Pearson val_corr > 0.5
+- [x] **Regenerate all 5 profiles** with updated `hover_evasion_capture.py` (Black Gridroom + checkerboard + 1.0m + 8-10m/s + 0.5s warmup)
+- [x] Retrain 300 epochs: val ExCorr=+0.271, val DcCorr=+0.293, Ex_loom/bg=23.3× on held-out diagonal
+  - Massive improvement from stuck −0.105 with old data; model now generalises to unseen approach angle
+  - Best training ExCorr=0.717 @ epoch 105
+- [ ] Regenerate with 1.5s warmup (already in script) to eliminate pre-launch texture spike artifact
+- [ ] Target val_corr > 0.5 after warmup fix + longer training
 
 **Week 5 — LGMD SNN training refinement**
 - [ ] Supervised training on full 5-profile dataset

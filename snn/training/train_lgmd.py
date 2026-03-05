@@ -118,11 +118,22 @@ def make_label_from_trajectory(events, h5_path, encoder):
         dp   = f["drone_hover_position"][:]
         r    = float(f["obstacle_radius"][()])
         dt   = float(f["sim_dt"][()])
-        # launch_step is the exact simulation step where the obstacle started
-        # moving (= WARMUP_STEPS).  Use it to build a physical time axis so
-        # the angular-velocity label aligns precisely with event timestamps
-        # regardless of how long the warmup was.
         launch_step = int(f["launch_step"][()]) if "launch_step" in f else 0
+
+    # Guard against trajectory double-sampling: Pegasus calls backend.update()
+    # at the physics substep rate (typically 2× the render rate).  If the
+    # trajectory was NOT subsampled at save time, dt_stored = 1/FPS but each
+    # point is actually 1/(2*FPS) apart → the trajectory appears 2× too long.
+    # Detect this by comparing traj duration to event recording duration and
+    # correct dt accordingly.
+    t0_us = float(events[0, 0])
+    t1_us = float(events[-1, 0])
+    event_dur_s  = (t1_us - t0_us) * 1e-6
+    traj_dur_s   = len(traj) * dt
+    # Allow up to 30% overshoot (trajectory may run a little longer than events)
+    if traj_dur_s > event_dur_s * 1.3:
+        factor = round(traj_dur_s / event_dur_s)
+        dt = dt / factor   # correct to actual per-sample interval
 
     dth = angular_velocity_label(traj, dp, r, dt)   # shape (T_sim,)
 
@@ -130,14 +141,10 @@ def make_label_from_trajectory(events, h5_path, encoder):
     traj_t_s  = np.arange(len(dth), dtype=np.float64) * dt
 
     # Physical time axis for the event bins (seconds from recording start)
-    t0_us  = float(events[0, 0])
-    t1_us  = float(events[-1, 0])
     n_bins = int((t1_us - t0_us) / encoder.dt_us)
-    # Event timestamps are absolute simulation time in µs — convert to seconds
     event_t_s = np.linspace(t0_us, t1_us, n_bins) * 1e-6
 
-    # Interpolate the angular-velocity label onto the event time axis.
-    # np.interp clamps at the edges, so bins before launch_step → dth[0] ≈ 0
+    # Interpolate dθ/dt onto the event time axis; np.interp clamps at edges.
     lab = np.interp(event_t_s, traj_t_s, dth).astype(np.float32)
     return lab / (lab.max() + 1e-6)
 
