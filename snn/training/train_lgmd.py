@@ -387,6 +387,19 @@ def train(args):
 
     best_metric = -9.0; best_ep = 0; t0 = time.time()
 
+    # CSV metrics log alongside the saved weights
+    csv_path = None
+    csv_file = None
+    if args.save:
+        import csv as _csv
+        csv_path = str(Path(args.save).with_suffix(".csv"))
+        Path(args.save).parent.mkdir(parents=True, exist_ok=True)
+        csv_file = open(csv_path, "w", newline="")
+        _csv_writer = _csv.writer(csv_file)
+        _csv_writer.writerow(["epoch", "tr_loss", "va_loss",
+                              "ex_corr", "dc_corr",
+                              "ex_loom", "ex_bg", "acc", "lr"])
+
     for ep in range(1, args.epochs + 1):
         model.train(); tr_loss = 0.0
         for fr, lb in tl:
@@ -420,11 +433,25 @@ def train(args):
                 print(f"  {ep:5d}  {tr_loss:8.5f}  {vl_:8.5f}  {vex:8.4f}  "
                       f"{vdc:8.4f}  {exl:8.6f}  {exb:6.4f}  {acc:5.1%}  "
                       f"{lr_:8.2e}  {el:3.0f}s{m}", flush=True)
+                if csv_file:
+                    _csv_writer.writerow([ep, f"{tr_loss:.6f}", f"{vl_:.6f}",
+                                          f"{vex:.6f}", f"{vdc:.6f}",
+                                          f"{exl:.8f}", f"{exb:.8f}",
+                                          f"{acc:.6f}", f"{lr_:.2e}"])
+                    csv_file.flush()
             else:
                 print(f"  {ep:5d}  {tr_loss:8.5f}  {'—':>8}  {'—':>8}  "
                       f"{'—':>8}  {'—':>8}  {'—':>6}  {'—':>5}  "
                       f"{lr_:8.2e}  {el:3.0f}s", flush=True)
+                if csv_file:
+                    _csv_writer.writerow([ep, f"{tr_loss:.6f}", "", "", "",
+                                          "", "", "", f"{lr_:.2e}"])
+                    csv_file.flush()
 
+    if csv_file:
+        csv_file.close()
+        if csv_path:
+            print(f"  Metrics CSV saved → {csv_path}", flush=True)
     label = "Acc" if use_bce else "ExCorr"
     print(f"\n  Done {time.time()-t0:.0f}s  best {label}={best_metric:.4f} @ ep {best_ep}",
           flush=True)
