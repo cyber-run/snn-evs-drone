@@ -8,8 +8,7 @@ VENV_DIR="$HOME/isaaclab-env"
 ISAACLAB_DIR="$HOME/IsaacLab"
 
 # Accept NVIDIA Omniverse EULA non-interactively
-export OMNI_ACCEPT_EULA=Y
-export NVIDIA_ACCEPT_EULA=Y
+export OMNI_KIT_ACCEPT_EULA=Y
 
 echo "[1/5] Installing system dependencies..."
 sudo apt-get update -q
@@ -37,12 +36,28 @@ if [ ! -d "$PROJECT_DIR" ]; then
 fi
 pip install -r "$PROJECT_DIR/requirements.txt"
 
+# Accept EULA via file (fallback for non-interactive shells)
+EULA_FILE="$VENV_DIR/lib/python3.10/site-packages/omni/EULA_ACCEPTED"
+mkdir -p "$(dirname $EULA_FILE)"
+echo "yes" > "$EULA_FILE"
+
+# Install Pegasus Simulator
+PEGASUS_DIR="$HOME/PegasusSimulator"
+if [ ! -d "$PEGASUS_DIR" ]; then
+    git clone https://github.com/PegasusSimulator/PegasusSimulator.git "$PEGASUS_DIR"
+fi
+ISAACSIM_PATH="$VENV_DIR/lib/python3.10/site-packages/isaacsim"
+export ISAACSIM_PATH
+pip install -e "$PEGASUS_DIR/extensions/pegasus.simulator"
+
 # Persist venv activation in .bashrc
 if ! grep -q "isaaclab-env" ~/.bashrc; then
     echo "" >> ~/.bashrc
     echo "# Isaac Lab environment" >> ~/.bashrc
     echo "source $VENV_DIR/bin/activate" >> ~/.bashrc
+    echo "export OMNI_KIT_ACCEPT_EULA=Y" >> ~/.bashrc
     echo "export ISAACLAB_PATH=$ISAACLAB_DIR" >> ~/.bashrc
+    echo "export ISAACSIM_PATH=$VENV_DIR/lib/python3.10/site-packages/isaacsim" >> ~/.bashrc
 fi
 
 echo ""
