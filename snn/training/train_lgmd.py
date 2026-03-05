@@ -254,12 +254,26 @@ def make_label_from_event_rate(events, encoder):
     return c / (c.max() + 1e-6)
 
 
-def _load_single(path, encoder, n_bins, stride_bins, binary=False, tag=""):
+def _load_single(path, encoder, n_bins, stride_bins, binary=False,
+                 skip_warmup=False, tag=""):
     pfx = f"[{tag}] " if tag else "  "
     print(f"{pfx}{path}", flush=True)
     with h5py.File(path, "r") as f:
         ev  = f["events"][:]
         has = "obstacle_positions" in f
+        if skip_warmup and has and "launch_step" in f and "sim_dt" in f:
+            launch_step = int(f["launch_step"][()])
+            sim_dt      = float(f["sim_dt"][()])
+            # Clip events to start n_bins before launch so we keep a small
+            # pre-launch background window but exclude the texture burst.
+            launch_us = launch_step * sim_dt * 1e6
+            clip_us   = launch_us - n_bins * encoder.dt_us
+            n_before   = len(ev)
+            ev = ev[ev[:, 0] >= clip_us]
+            print(f"{pfx}  skip_warmup: clipped {n_before - len(ev):,} events "
+                  f"before t={clip_us/1e6:.2f}s (launch={launch_us/1e6:.2f}s)",
+                  flush=True)
+
     lab  = (make_label_from_trajectory(ev, path, encoder, binary=binary) if has
             else make_label_from_event_rate(ev, encoder))
     frac = float((lab > 0.5).mean() if binary else (lab > 0.05).mean()) * 100
@@ -318,9 +332,10 @@ def train(args):
 
     h5s = args.h5 if isinstance(args.h5, list) else [args.h5]
     stride = args.stride_bins
+    skip = args.skip_warmup
     print(f"\nTrain ({len(h5s)}):", flush=True)
     train_datasets = [_load_single(p, enc, args.n_bins, stride,
-                                   binary=use_bce, tag="tr")
+                                   binary=use_bce, skip_warmup=skip, tag="tr")
                       for p in h5s]
     tr = ConcatDataset(train_datasets)
     print(f"  {len(tr)} windows  batch={args.batch}  "
@@ -331,7 +346,7 @@ def train(args):
         vs = args.val_h5 if isinstance(args.val_h5, list) else [args.val_h5]
         print(f"\nVal ({len(vs)}):", flush=True)
         val_datasets = [_load_single(p, enc, args.n_bins, stride,
-                                     binary=use_bce, tag="va")
+                                     binary=use_bce, skip_warmup=skip, tag="va")
                         for p in vs]
         va = ConcatDataset(val_datasets)
         print(f"  {len(va)} windows held out", flush=True)
@@ -460,6 +475,8 @@ if __name__ == "__main__":
     # Augmentation
     p.add_argument("--augment", action="store_true",
                    help="Enable GPU batch augmentation")
+    p.add_argument("--skip_warmup", action="store_true",
+                   help="Clip events before launch (excludes texture-burst warmup bins)")
 
     # System
     p.add_argument("--num_workers", type=int, default=6)
