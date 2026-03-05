@@ -48,6 +48,20 @@ import cv2
 done("Imports complete")
 
 
+class MonocularCameraIsaacSim45(MonocularCamera):
+    """MonocularCamera with Isaac Sim 4.5 compatibility fix.
+    Pegasus 5.1 calls set_lens_distortion_model which was removed in Isaac Sim 4.5.
+    """
+    def start(self):
+        self._camera.initialize()
+        self._camera.set_resolution(self._resolution, maintain_square_pixels=True)
+        self._camera.set_clipping_range(*self._clipping_range)
+        self._camera.set_frequency(self._frequency)
+        if self._depth:
+            self._camera.add_distance_to_image_plane_to_frame()
+        self._camera_full_set = True
+
+
 class FrameCaptureBackend(Backend):
     """Backend that captures RGB frames from the onboard camera each step."""
 
@@ -71,15 +85,19 @@ class FrameCaptureBackend(Backend):
         if self.frame_count >= self.max_frames:
             return
         try:
-            rgb = data["camera"].get_rgb()
+            cam = data.get("camera")
+            if cam is None:
+                return
+            rgb = cam.get_rgb()
             if rgb is not None and rgb.size > 0:
-                # Convert RGBA → BGR for OpenCV
                 bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
                 path = os.path.join(self.frame_dir, f"frame_{self.frame_count:06d}.png")
                 cv2.imwrite(path, bgr)
                 self.frame_count += 1
+                if self.frame_count % 60 == 0:
+                    tqdm.write(f"  captured frame {self.frame_count}")
         except Exception as e:
-            pass  # Camera may not be ready on early steps
+            tqdm.write(f"  [warn] frame capture error: {e}")
 
     def update_state(self, state):
         pass
@@ -114,7 +132,7 @@ def run_simulation():
     backend = FrameCaptureBackend(FRAME_DIR, max_frames=NUM_STEPS)
     config = MultirotorConfig()
     config.backends = [backend]
-    config.graphical_sensors = [MonocularCamera("front_camera", config={
+    config.graphical_sensors = [MonocularCameraIsaacSim45("front_camera", config={
         "frequency": FPS,
         "resolution": RESOLUTION,
         "position": np.array([0.15, 0.0, 0.0]),   # forward-facing, nose mount
