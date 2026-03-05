@@ -50,14 +50,16 @@ TOTAL_STEPS   = int(10.0 * FPS)   # 10 s total: 1.5s warmup + ~0.6s approach + 7
 OBSTACLE_HALF_SIZE = 0.5           # metres (1.0 m cube)
 
 # Approach profiles: (launch_x, launch_y, launch_z, speed_x, speed_y, speed_z)
-# Speeds increased to 8-10 m/s so the obstacle fills the FOV quickly,
-# generating a strong looming event burst for the LGMD to learn from.
+# Launch distance 15 m — far enough that the checkerboard texture is sub-pixel
+# at start, so the texture-activation event transient falls well within the
+# warmup period (before any approach events).  Speeds 8-12 m/s give ~1-2 s
+# approach time, producing a strong looming event burst.
 PROFILES = {
-    "head_on":  (6.0,  0.0,  1.5, -10.0,  0.0,  0.0),
-    "lateral":  (6.0,  3.0,  1.5,  -8.0, -4.0,  0.0),
-    "high":     (6.0,  0.0,  3.5,  -8.0,  0.0, -2.0),
-    "low":      (6.0,  0.0, -0.5,  -8.0,  0.0,  2.0),
-    "diagonal": (5.0,  5.0,  1.5,  -6.0, -6.0,  0.0),
+    "head_on":  (15.0,  0.0,  1.5, -12.0,  0.0,  0.0),
+    "lateral":  (15.0,  5.0,  1.5, -10.0, -4.0,  0.0),
+    "high":     (15.0,  0.0,  4.0, -10.0,  0.0, -2.0),
+    "low":      (15.0,  0.0, -1.0, -10.0,  0.0,  2.0),
+    "diagonal": (12.0, 10.0,  1.5,  -8.0, -8.0,  0.0),
 }
 
 
