@@ -155,9 +155,16 @@ class HoverEvasionBackend(Backend):
       - Holds altitude with a PID controller
       - Captures RGB frames every sim step
       - Records obstacle and drone positions every step
+      - (optional) runs live SNN evasion via log-diff event camera
     """
 
-    def __init__(self, frame_dir: str, max_frames: int, target_z: float):
+    # Evasion: climb throttle offset applied on all rotors when DCMD fires
+    EVASION_THRUST = 120.0   # rad/s added to all rotors → ~0.5 m/s² climb
+
+    def __init__(self, frame_dir: str, max_frames: int, target_z: float,
+                 evasion_model=None, n_bins: int = 20,
+                 dcmd_threshold: float = 0.3, pool_factor: int = 4,
+                 log_diff_threshold: float = 0.15):
         super().__init__(config=BackendConfig())
         os.makedirs(frame_dir, exist_ok=True)
         self.frame_dir = frame_dir
@@ -174,6 +181,20 @@ class HoverEvasionBackend(Backend):
         self.obstacle_positions = []   # (T, 3) — None until obstacle assigned
         self._obstacle = None          # DynamicCuboid reference, set externally
 
+        # ── Live SNN evasion ─────────────────────────────────────────────────
+        self._evasion_model = evasion_model
+        self._n_bins = n_bins
+        self._pool_factor = pool_factor
+        self._log_diff_thresh = log_diff_threshold
+        self._dcmd_threshold  = dcmd_threshold
+
+        self._prev_log_lum    = None   # (H, W) float32
+        self._event_buffer    = []     # rolling list of (2, Hp, Wp) tensors
+        self._dcmd_history    = []     # (step, dcmd_value) log
+        self._evading         = False
+        self._evasion_step    = None
+        self._closest_dist    = float("inf")
+
     # Called every physics step
     def update(self, dt: float):
         self.step_count += 1
@@ -188,13 +209,39 @@ class HoverEvasionBackend(Backend):
             try:
                 obs_pos, _ = self._obstacle.get_world_pose()
                 self.obstacle_positions.append(np.array(obs_pos))
+                # Track closest approach for evasion evaluation
+                dist = float(np.linalg.norm(np.array(obs_pos) - pos))
+                self._closest_dist = min(self._closest_dist, dist)
             except Exception:
                 self.obstacle_positions.append(np.zeros(3))
         else:
             self.obstacle_positions.append(np.zeros(3))
 
-        # Update PID
+        # ── Run SNN evasion check (post-warmup only) ─────────────────────────
+        if (self._evasion_model is not None
+                and self.step_count > WARMUP_STEPS
+                and len(self._event_buffer) == self._n_bins):
+            import torch
+            with torch.no_grad():
+                x = torch.stack(self._event_buffer).unsqueeze(1)  # (T, 1, 2, Hp, Wp)
+                dcmd, _, _ = self._evasion_model(x)
+                imminence = float(dcmd[-1, 0])
+            self._dcmd_history.append((self.step_count, imminence))
+
+            if imminence > self._dcmd_threshold and not self._evading:
+                self._evading = True
+                self._evasion_step = self.step_count
+                t_s = self.step_count * SIM_DT
+                tqdm.write(f"  [t={t_s:.2f}s step={self.step_count}] "
+                           f"EVASION triggered! DCMD={imminence:.4f}")
+
+        # Update PID and optionally add evasion thrust
         self._rotor_cmd = self.pid.compute(pos, dt)
+        if self._evading:
+            self._rotor_cmd = [
+                min(c + self.EVASION_THRUST, AltitudePID.CLAMP[1])
+                for c in self._rotor_cmd
+            ]
 
     def update_sensor(self, sensor_type: str, data):
         pass
@@ -210,12 +257,39 @@ class HoverEvasionBackend(Backend):
                 return
             rgb = cam.get_rgb()
             if rgb is not None and rgb.size > 0:
-                bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
-                path = os.path.join(self.frame_dir, f"frame_{self.frame_count:06d}.bmp")
-                cv2.imwrite(path, bgr)
+                # Save frame for v2e (skip in evasion-only mode)
+                if self.frame_dir and not getattr(self, "_evasion_only", False):
+                    bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
+                    path = os.path.join(self.frame_dir,
+                                        f"frame_{self.frame_count:06d}.bmp")
+                    cv2.imwrite(path, bgr)
                 self.frame_count += 1
                 if self.frame_count % 60 == 0:
                     tqdm.write(f"  captured frame {self.frame_count}")
+
+                # ── Live log-diff event camera for evasion SNN ───────────────
+                if self._evasion_model is not None:
+                    import torch, torch.nn.functional as TF
+                    frame_f = rgb[..., :3].astype(np.float32) / 255.0
+                    lum = (0.299 * frame_f[..., 0]
+                           + 0.587 * frame_f[..., 1]
+                           + 0.114 * frame_f[..., 2])
+                    log_lum = np.log(lum + 1e-6)          # (H, W)
+                    if self._prev_log_lum is not None:
+                        diff = log_lum - self._prev_log_lum
+                        on  = (diff >  self._log_diff_thresh).astype(np.float32)
+                        off = (diff < -self._log_diff_thresh).astype(np.float32)
+                        ev_frame = torch.from_numpy(
+                            np.stack([on, off], axis=0))   # (2, H, W)
+                        # Spatial pool to match model input (H//4, W//4)
+                        if self._pool_factor > 1:
+                            ev_frame = TF.avg_pool2d(
+                                ev_frame.unsqueeze(0),
+                                self._pool_factor).squeeze(0)
+                        self._event_buffer.append(ev_frame)
+                        if len(self._event_buffer) > self._n_bins:
+                            self._event_buffer.pop(0)
+                    self._prev_log_lum = log_lum
         except Exception as e:
             tqdm.write(f"  [warn] frame capture: {e}")
 
@@ -243,6 +317,21 @@ class HoverEvasionBackend(Backend):
 
 def run_simulation(args):
     os.makedirs(FRAME_DIR, exist_ok=True)
+
+    # ── Load SNN evasion model if --evasion flag given ────────────────────────
+    evasion_model = None
+    if getattr(args, "evasion", False) and args.weights:
+        import torch, sys as _sys
+        _sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
+        from snn.models.lgmd_net import LGMDNet
+        H_enc = RESOLUTION[1] // 4   # 260 // 4 = 65
+        W_enc = RESOLUTION[0] // 4   # 346 // 4 = 87
+        evasion_model = LGMDNet(height=H_enc, width=W_enc, pool_factor=1)
+        state = torch.load(args.weights, map_location="cpu", weights_only=True)
+        evasion_model.load_state_dict(state)
+        evasion_model.eval()
+        tqdm.write(f"  Evasion model loaded from {args.weights} "
+                   f"(threshold={args.dcmd_threshold:.2f})")
 
     # Resolve approach profile
     if args.profile and args.profile in PROFILES:
@@ -330,7 +419,9 @@ def run_simulation(args):
 
     stage("Spawning quadrotor with camera")
     backend = HoverEvasionBackend(FRAME_DIR, max_frames=TOTAL_STEPS,
-                                  target_z=DRONE_SPAWN[2])
+                                  target_z=DRONE_SPAWN[2],
+                                  evasion_model=evasion_model,
+                                  dcmd_threshold=getattr(args, "dcmd_threshold", 0.3))
     backend._obstacle = obstacle
 
     config = MultirotorConfig()
@@ -380,6 +471,22 @@ def run_simulation(args):
     raw_traj_len = len(backend.drone_positions)
     done(f"Captured {backend.frame_count} frames  |  "
          f"{raw_traj_len} trajectory points (raw physics rate)")
+
+    # ── Evasion summary ───────────────────────────────────────────────────────
+    if backend._evasion_model is not None:
+        if backend._evading:
+            t_evade = backend._evasion_step * SIM_DT
+            dcmd_at_evade = next(
+                (v for s, v in backend._dcmd_history if s == backend._evasion_step), 0.0
+            )
+            result = ("MISS" if backend._closest_dist > 0.6 else "HIT")
+            tqdm.write(f"\n  === EVASION RESULT: {result} ===")
+            tqdm.write(f"  Evasion triggered at t={t_evade:.2f}s  "
+                       f"DCMD={dcmd_at_evade:.4f}")
+            tqdm.write(f"  Closest approach: {backend._closest_dist:.2f}m")
+        else:
+            tqdm.write(f"\n  === NO EVASION triggered (DCMD never exceeded {backend._dcmd_threshold:.2f}) ===")
+            tqdm.write(f"  Closest approach: {backend._closest_dist:.2f}m")
 
     # Save trajectory metadata to a separate directory so v2e doesn't read it as a frame
     os.makedirs(META_DIR, exist_ok=True)
@@ -509,6 +616,14 @@ if __name__ == "__main__":
     parser.add_argument("--launch_z", type=float, default=1.5)
     parser.add_argument("--speed",    type=float, default=5.0,
                         help="Approach speed in m/s (velocity aimed at drone)")
+
+    # Evasion mode
+    parser.add_argument("--evasion", action="store_true",
+                        help="Enable closed-loop SNN evasion (requires --weights)")
+    parser.add_argument("--weights", default=None,
+                        help="Path to trained LGMDNet weights (.pt)")
+    parser.add_argument("--dcmd_threshold", type=float, default=0.3,
+                        help="DCMD threshold to trigger evasion (default 0.3)")
 
     args = parser.parse_args()
 
