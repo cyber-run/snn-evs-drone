@@ -132,14 +132,28 @@ def make_label_from_event_rate(events, encoder):
 
 # ── Training loop ─────────────────────────────────────────────────────────────
 
+def _load_single(h5_path, encoder, n_bins):
+    """Load one H5 file and return a LoomingDataset."""
+    print(f"  Loading {h5_path}")
+    with h5py.File(h5_path, "r") as f:
+        events = f["events"][:]
+        has_traj = "obstacle_positions" in f
+    print(f"    {len(events):,} events")
+
+    if has_traj:
+        label = make_label_from_trajectory(events, h5_path, encoder)
+        print("    label: analytical dθ/dt")
+    else:
+        label = make_label_from_event_rate(events, encoder)
+        print("    label: event-rate heuristic")
+
+    return LoomingDataset(events, label, encoder,
+                          n_bins=n_bins, stride_bins=n_bins // 2)
+
+
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
-
-    print(f"Loading events from {args.h5}")
-    with h5py.File(args.h5, "r") as f:
-        events = f["events"][:]
-    print(f"  {len(events):,} events loaded")
 
     encoder = EventEncoder(
         height=args.height,
@@ -148,22 +162,18 @@ def train(args):
         mode="binary",
     )
 
-    # Build label
-    with h5py.File(args.h5, "r") as f:
-        has_traj = "obstacle_positions" in f
+    # Support one or more H5 files — concatenate their datasets
+    h5_paths = args.h5 if isinstance(args.h5, list) else [args.h5]
+    print(f"Loading {len(h5_paths)} recording(s)...")
+    datasets = [_load_single(p, encoder, args.n_bins) for p in h5_paths]
+    from torch.utils.data import ConcatDataset
+    combined = ConcatDataset(datasets)
+    total_windows = sum(len(d) for d in datasets)
+    print(f"  Total: {total_windows} training windows across {len(h5_paths)} recording(s)")
 
-    if has_traj:
-        print("Using analytical dθ/dt label from trajectory data")
-        label = make_label_from_trajectory(events, args.h5, encoder)
-    else:
-        print("No trajectory data found — using event-rate heuristic label")
-        label = make_label_from_event_rate(events, encoder)
+    dataset = combined
 
-    dataset = LoomingDataset(events, label, encoder,
-                             n_bins=args.n_bins, stride_bins=args.n_bins // 2)
-    print(f"  {len(dataset)} training windows")
-
-    if len(dataset) == 0:
+    if total_windows == 0:
         print("ERROR: No windows generated. Check event count and dt_us setting.")
         return
 
@@ -223,7 +233,7 @@ def train(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--h5",      required=True, help="Path to events.h5")
+    parser.add_argument("--h5",      required=True, nargs="+", help="Path(s) to events.h5")
     parser.add_argument("--height",  type=int,   default=260)
     parser.add_argument("--width",   type=int,   default=346)
     parser.add_argument("--dt_us",   type=float, default=5000.0,
