@@ -54,7 +54,7 @@ class MonocularCameraIsaacSim45(MonocularCamera):
     """
     def start(self):
         self._camera.initialize()
-        self._camera.set_resolution(self._resolution, maintain_square_pixels=True)
+        self._camera.set_resolution(self._resolution)
         self._camera.set_clipping_range(*self._clipping_range)
         self._camera.set_frequency(self._frequency)
         if self._depth:
