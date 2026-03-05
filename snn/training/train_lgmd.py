@@ -117,62 +117,53 @@ def pearson_val(x: torch.Tensor, lbl: torch.Tensor) -> float:
 
 class LoomingDataset(Dataset):
     """
-    Lazy-encoding dataset: raw events in RAM, encoded per window on-the-fly.
+    Pre-encoded dataset: all windows encoded at init, stored in RAM.
 
-    Compared to pre-encoding all windows to RAM, this:
-      - Uses ~100x less memory (events only, not dense frames)
-      - Supports fine dt_us / large n_bins without OOM
-      - Enables on-the-fly augmentation
-      - Adds ~10ms latency per sample (bincount on ~10K events)
+    With spatial_downsample in the encoder (e.g. 4x → 65x87 output),
+    each window is ~2.3 MB so thousands of windows fit comfortably.
+    Augmentation is applied on-the-fly to the small pre-encoded tensors.
     """
 
     def __init__(self, events, label, encoder, n_bins=50, stride_bins=10,
                  augmentor=None):
         order  = np.argsort(events[:, 0], kind="stable")
         events = events[order]
-        self.ts = events[:, 0].astype(np.float64)
-        self.xs = events[:, 1].astype(np.int32)
-        self.ys = events[:, 2].astype(np.int32)
-        self.ps = events[:, 3].astype(np.int32)
-        self.encoder = encoder
+        ts_f64 = events[:, 0].astype(np.float64)
+        xs_i32 = events[:, 1].astype(np.int32)
+        ys_i32 = events[:, 2].astype(np.int32)
+        ps_i32 = events[:, 3].astype(np.int32)
         self.augmentor = augmentor
-        self.n_bins = n_bins
 
-        t_start      = float(self.ts[0])
-        t_end        = float(self.ts[-1])
+        t_start      = float(ts_f64[0])
+        t_end        = float(ts_f64[-1])
         n_total_bins = int((t_end - t_start) / encoder.dt_us)
 
-        self.windows = []   # window start times (µs)
-        labels = []
+        fl, ll = [], []
         for i in range(0, n_total_bins - n_bins, stride_bins):
             ws = t_start + i * encoder.dt_us
+            we = ws + n_bins * encoder.dt_us
             lb = label[i:i + n_bins]
             if len(lb) == n_bins:
-                self.windows.append(ws)
-                labels.append(torch.from_numpy(lb.copy()))
+                lo = int(np.searchsorted(ts_f64, ws, side="left"))
+                hi = int(np.searchsorted(ts_f64, we, side="left"))
+                fl.append(encoder._encode_columns(
+                    ts_f64[lo:hi], xs_i32[lo:hi],
+                    ys_i32[lo:hi], ps_i32[lo:hi], ws, n_bins))
+                ll.append(torch.from_numpy(lb.copy()))
 
-        self.labels = torch.stack(labels) if labels else torch.empty(0)
-        self._mean_labels = (self.labels.mean(dim=1)
-                             if len(self.labels) > 0 else torch.empty(0))
+        self.all_frames = torch.stack(fl) if fl else torch.empty(0)
+        self.all_labels = torch.stack(ll) if ll else torch.empty(0)
+        self._mean_labels = (self.all_labels.mean(dim=1)
+                             if len(self.all_labels) > 0 else torch.empty(0))
 
     def __len__(self):
-        return len(self.windows)
+        return len(self.all_frames)
 
     def __getitem__(self, i):
-        ws = self.windows[i]
-        we = ws + self.n_bins * self.encoder.dt_us
-
-        lo = int(np.searchsorted(self.ts, ws, side="left"))
-        hi = int(np.searchsorted(self.ts, we, side="left"))
-
-        frames = self.encoder._encode_columns(
-            self.ts[lo:hi], self.xs[lo:hi],
-            self.ys[lo:hi], self.ps[lo:hi], ws, self.n_bins)
-
+        frames = self.all_frames[i]
         if self.augmentor is not None:
             frames = self.augmentor(frames)
-
-        return frames, self.labels[i]
+        return frames, self.all_labels[i]
 
     def sample_weights(self, loom_weight=5.0):
         """Per-window weights for WeightedRandomSampler (higher for looming)."""
@@ -410,7 +401,7 @@ if __name__ == "__main__":
                    help="Enable on-the-fly data augmentation")
 
     # System
-    p.add_argument("--num_workers", type=int, default=2)
+    p.add_argument("--num_workers", type=int, default=6)
     p.add_argument("--save",   default="results/lgmd_weights.pt")
 
     train(p.parse_args())
