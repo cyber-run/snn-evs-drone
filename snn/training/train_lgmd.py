@@ -81,8 +81,8 @@ class LoomingDataset(Dataset):
 def make_label_from_trajectory(events, h5_path, encoder):
     """Load trajectory from HDF5 and compute analytical dθ/dt label."""
     with h5py.File(h5_path, "r") as f:
-        traj = f["obstacle_trajectory"][:]   # (M, 3) positions at sim dt
-        drone_pos = f["drone_position"][:]   # (3,) fixed hover position
+        traj = f["obstacle_positions"][:]       # (M, 3) positions at sim dt
+        drone_pos = f["drone_hover_position"][:]  # (3,) mean hover position
         obs_radius = float(f["obstacle_radius"][()])
         sim_dt = float(f["sim_dt"][()])
 
@@ -143,7 +143,7 @@ def train(args):
 
     # Build label
     with h5py.File(args.h5, "r") as f:
-        has_traj = "obstacle_trajectory" in f
+        has_traj = "obstacle_positions" in f
 
     if has_traj:
         print("Using analytical dθ/dt label from trajectory data")
