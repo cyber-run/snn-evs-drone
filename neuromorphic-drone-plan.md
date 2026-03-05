@@ -66,36 +66,39 @@ The core SNN architecture is modelled on the **Locust LGMD (Lobula Giant Movemen
 
 **Week 2 — Event camera pipeline** ✓
 - `events/capture_and_convert.py`: Isaac Sim → 502 frames → v2e → 1.31M events
-- SuperSloMo 17× upsampling, 980µs resolution, DAVIS346 (346×260)
+- SuperSloMo upsampling, DAVIS346 (346×260); event format: HDF5 `(N, 4)` uint32 `[timestamp_us, x, y, polarity]`
 - Isaac Sim 4.5 compatibility fixes: `MonocularCameraIsaacSim45`, `Backend` base class
-- Event format confirmed: HDF5 `(N, 4)` uint32 `[timestamp_us, x, y, polarity]`
 - `events/visualise_events.py`: accumulation-window video renderer
 
-**Week 3 — SNN foundations** ← current
-- [ ] Define LGMD SNN architecture in SpikingJelly
-- [ ] Implement event encoding: ON/OFF channels → spike frames
-- [ ] Validate pipeline: looming event sequence → SNN → DCMD output
+**Week 3 — SNN foundations** ✓
+- `snn/models/lgmd_net.py`: LGMD SNN in SpikingJelly (excitation + delayed lateral inhibition + DCMD readout)
+- `snn/models/event_encoder.py`: events → `(T, 2, H, W)` spike frames; analytical `dθ/dt` label from trajectory
+- `snn/training/train_lgmd.py`: training on looming sequences, multi-H5 support, 50 epochs in ~40s on L40s
+- `sim/hover_evasion_capture.py`: hover drone + dynamic obstacle, 120 FPS, trajectory metadata in H5
+- Initial training run: 2 profiles (head_on, lateral), 164 windows, loss 0.054 → 0.046
+- **Known issue**: gravity on obstacle not disabled until end of session — all data before fix needs regeneration
+- FPS raised to 120 (SuperSloMo ~9× vs 17×, v2e ~2× faster, more accurate events)
 
-**Milestone:** Event data flowing into LGMD SNN, basic looming detection working.
+**Milestone:** LGMD SNN architecture complete and training pipeline working end-to-end. ✓
 
 ---
 
-### Phase 2 — Dynamic Obstacle Scene + LGMD Training (Weeks 4–8)
+### Phase 2 — Dynamic Obstacle Scene + LGMD Training (Weeks 4–8) ← current
 
-**Week 4 — Dynamic obstacle simulation**
-- `sim/hover_evasion_capture.py`: hovering drone + `DynamicCuboid` launched at it
-- Vary obstacle speed (2–8 m/s), size, and approach angle
-- Generate diverse looming event dataset
+**Week 4 — Data regeneration + diverse profiles**
+- [ ] Regenerate all profiles with gravity fix applied (`--name head_on`, `lateral`, `diagonal`, `high`, `low`)
+- [ ] Retrain on 5 profiles; target loss < 0.035
+- [ ] Validate DCMD output shape matches looming approach (peaks as obstacle approaches)
 
-**Week 5 — LGMD SNN training**
-- Supervised training: looming event sequence → DCMD spike rate label
-- Loss: spike count vs expected collision-imminence curve
-- Baseline: frame-based CNN on same task (efficiency comparison for paper)
+**Week 5 — LGMD SNN training refinement**
+- [ ] Supervised training on full multi-profile dataset
+- [ ] Frame-based CNN baseline on same task (efficiency comparison for paper)
+- [ ] Ablation: effect of lateral inhibition delay, pooling factor, time bin size
 
 **Weeks 6–7 — Evasion controller**
-- DCMD output → lateral thrust/pitch/roll override
-- Closed-loop sim: hover → detect → evade → re-hover
-- Curriculum: slow obstacles → fast, single → multiple
+- [ ] DCMD output → lateral thrust/pitch/roll override
+- [ ] Closed-loop sim: hover → detect → evade → re-hover
+- [ ] Curriculum: slow obstacles → fast, single → multiple
 
 **Week 8 — Evaluation**
 - Metrics: evasion success rate, reaction latency, spike sparsity
