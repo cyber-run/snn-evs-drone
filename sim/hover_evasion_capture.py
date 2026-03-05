@@ -42,8 +42,9 @@ FPS        = 120          # camera + renderer Hz (physics runs at 250 Hz interna
 SIM_DT     = 1.0 / FPS   # simulated time per step
 
 DRONE_SPAWN   = [0.0, 0.0, 1.5]   # metres — hover target
-WARMUP_STEPS  = int(1.5 * FPS)    # 1.5 s warmup: physics settle + USD material propagation
-TOTAL_STEPS   = int(10.0 * FPS)   # 10 s total: 1.5s warmup + ~0.6s approach + 7.9s post
+WARMUP_STEPS  = int(3.0 * FPS)    # 3.0 s warmup: physics settle + USD material propagation
+                                  # Checkerboard texture activates at ~1.45s — 3s gives 1.5s gap
+TOTAL_STEPS   = int(12.0 * FPS)   # 12 s total: 3s warmup + ~1.5s approach + 7.5s post
 
 # Obstacle half-extents used for angular velocity label computation
 # Obstacle scale below is 1.0 m (full side), so half-extent = 0.5 m
