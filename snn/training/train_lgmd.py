@@ -36,14 +36,10 @@ from snn.models.event_encoder import EventEncoder, angular_velocity_label
 
 class EventAugmentor:
     """
-    On-the-fly augmentation for encoded event frames (T, 2, H, W).
+    GPU batch augmentation for encoded event frames.
 
-    Augmentations (all stochastic, applied independently per sample):
-      - Horizontal flip: spatial invariance for looming from any direction
-      - Vertical flip: same reasoning
-      - Polarity swap: ON<->OFF channels (dark-on-bright vs bright-on-dark)
-      - Additive noise: random binary events (simulates hot pixels / background)
-      - Event dropout: randomly zero a fraction of events (sim-to-real gap)
+    Operates on (T, B, 2, H, W) tensors already on device.
+    Per-sample random decisions for flips/swaps; element-wise noise/dropout.
     """
 
     def __init__(self, hflip=0.5, vflip=0.3, polarity_swap=0.2,
@@ -55,19 +51,36 @@ class EventAugmentor:
         self.dropout_rate = dropout_rate
 
     def __call__(self, frames: torch.Tensor) -> torch.Tensor:
-        """Augment a (T, 2, H, W) binary event frame tensor."""
-        if torch.rand(1).item() < self.hflip:
-            frames = frames.flip(-1)
-        if torch.rand(1).item() < self.vflip:
-            frames = frames.flip(-2)
-        if torch.rand(1).item() < self.polarity_swap:
-            frames = frames[:, [1, 0]]
+        """Augment a (T, B, 2, H, W) tensor in-place on device."""
+        T, B, C, H, W = frames.shape
+        dev = frames.device
+
+        # Per-sample flip decisions → broadcast over T, C, H or W
+        if self.hflip > 0:
+            mask = torch.rand(B, device=dev) < self.hflip           # (B,)
+            idx = torch.arange(W - 1, -1, -1, device=dev)           # reversed W
+            flipped = frames[:, :, :, :, idx]                        # (T,B,C,H,W)
+            frames = torch.where(mask[None, :, None, None, None], flipped, frames)
+
+        if self.vflip > 0:
+            mask = torch.rand(B, device=dev) < self.vflip
+            idx = torch.arange(H - 1, -1, -1, device=dev)
+            flipped = frames[:, :, :, idx, :]
+            frames = torch.where(mask[None, :, None, None, None], flipped, frames)
+
+        if self.polarity_swap > 0:
+            mask = torch.rand(B, device=dev) < self.polarity_swap
+            swapped = frames[:, :, [1, 0], :, :]
+            frames = torch.where(mask[None, :, None, None, None], swapped, frames)
+
         if self.noise_rate > 0:
             noise = (torch.rand_like(frames) < self.noise_rate).float()
             frames = (frames + noise).clamp_(0, 1)
+
         if self.dropout_rate > 0:
             mask = (torch.rand_like(frames) > self.dropout_rate).float()
             frames = frames * mask
+
         return frames
 
 
@@ -124,15 +137,13 @@ class LoomingDataset(Dataset):
     Augmentation is applied on-the-fly to the small pre-encoded tensors.
     """
 
-    def __init__(self, events, label, encoder, n_bins=50, stride_bins=10,
-                 augmentor=None):
+    def __init__(self, events, label, encoder, n_bins=50, stride_bins=10):
         order  = np.argsort(events[:, 0], kind="stable")
         events = events[order]
         ts_f64 = events[:, 0].astype(np.float64)
         xs_i32 = events[:, 1].astype(np.int32)
         ys_i32 = events[:, 2].astype(np.int32)
         ps_i32 = events[:, 3].astype(np.int32)
-        self.augmentor = augmentor
 
         t_start      = float(ts_f64[0])
         t_end        = float(ts_f64[-1])
@@ -160,10 +171,7 @@ class LoomingDataset(Dataset):
         return len(self.all_frames)
 
     def __getitem__(self, i):
-        frames = self.all_frames[i]
-        if self.augmentor is not None:
-            frames = self.augmentor(frames)
-        return frames, self.all_labels[i]
+        return self.all_frames[i], self.all_labels[i]
 
     def sample_weights(self, loom_weight=5.0):
         """Per-window weights for WeightedRandomSampler (higher for looming)."""
@@ -216,7 +224,7 @@ def make_label_from_event_rate(events, encoder):
     return c / (c.max() + 1e-6)
 
 
-def _load_single(path, encoder, n_bins, stride_bins, augmentor=None, tag=""):
+def _load_single(path, encoder, n_bins, stride_bins, tag=""):
     pfx = f"[{tag}] " if tag else "  "
     print(f"{pfx}{path}", flush=True)
     with h5py.File(path, "r") as f:
@@ -228,7 +236,7 @@ def _load_single(path, encoder, n_bins, stride_bins, augmentor=None, tag=""):
     src  = "analytical" if has else "event-rate"
     print(f"{pfx}  {len(ev):,} events  |  looming: {frac:.1f}%  ({src})", flush=True)
     t0 = time.time()
-    ds = LoomingDataset(ev, lab, encoder, n_bins, stride_bins, augmentor)
+    ds = LoomingDataset(ev, lab, encoder, n_bins, stride_bins)
     print(f"{pfx}  {len(ds)} windows in {time.time()-t0:.1f}s", flush=True)
     return ds
 
@@ -273,7 +281,7 @@ def train(args):
     h5s = args.h5 if isinstance(args.h5, list) else [args.h5]
     stride = args.stride_bins
     print(f"\nTrain ({len(h5s)}):", flush=True)
-    train_datasets = [_load_single(p, enc, args.n_bins, stride, augmentor, "tr")
+    train_datasets = [_load_single(p, enc, args.n_bins, stride, "tr")
                       for p in h5s]
     tr = ConcatDataset(train_datasets)
     print(f"  {len(tr)} windows  batch={args.batch}  "
@@ -283,7 +291,7 @@ def train(args):
     if args.val_h5:
         vs = args.val_h5 if isinstance(args.val_h5, list) else [args.val_h5]
         print(f"\nVal ({len(vs)}):", flush=True)
-        val_datasets = [_load_single(p, enc, args.n_bins, stride, None, "va")
+        val_datasets = [_load_single(p, enc, args.n_bins, stride, "va")
                         for p in vs]
         va = ConcatDataset(val_datasets)
         print(f"  {len(va)} windows held out", flush=True)
@@ -294,7 +302,7 @@ def train(args):
         weights.extend(tds.sample_weights(loom_weight=args.loom_weight))
     sampler = WeightedRandomSampler(weights, len(weights), replacement=True)
 
-    nw = min(args.num_workers, 4) if device.type == "cuda" else 0
+    nw = args.num_workers if device.type == "cuda" else 0
     tl = DataLoader(tr, batch_size=args.batch, sampler=sampler,
                     num_workers=nw, pin_memory=(device.type == "cuda"),
                     persistent_workers=(nw > 0))
@@ -327,6 +335,8 @@ def train(args):
         for fr, lb in tl:
             fr = fr.permute(1, 0, 2, 3, 4).to(device, non_blocking=True)
             lb = lb.permute(1, 0).to(device, non_blocking=True)
+            if augmentor is not None:
+                fr = augmentor(fr)
             opt.zero_grad()
             dc, _, ex = model(fr)
             loss = combined_loss(dc, ex, lb, exc_weight=args.exc_weight,
