@@ -1,7 +1,7 @@
-# Neuromorphic Quadcopter: Event-Driven SNN Obstacle Avoidance
-## Project Plan
+# Neuromorphic Quadcopter: Project Plan
+## Insect-Inspired Event-Driven Obstacle Avoidance
 
-**Goal:** A sim-to-real quadcopter obstacle avoidance system using event cameras and spiking neural networks — demonstrating that the temporal sparsity of event data and SNNs are a natural, efficient pairing for high-speed reactive flight.
+**Goal:** A sim-to-real quadcopter collision avoidance system using event cameras and a biologically-plausible SNN, demonstrating that the temporal sparsity of event data and SNNs are a natural, efficient pairing for high-speed reactive flight.
 
 **Time budget:** ~40 hrs/week
 **Hardware available:** EVS cameras, quadcopters (Imperial)
@@ -9,152 +9,154 @@
 
 ---
 
-## Stack
+## Stack (confirmed)
 
 | Component | Tool | Reason |
 |---|---|---|
-| Quadcopter simulation | Flightmare | Fast, Python-friendly, RL-ready |
-| Event camera simulation | v2e | No ROS dependency, simpler integration |
-| SNN framework | SpikingJelly | PyTorch-based, best documented, active community |
-| RL training | Stable-Baselines3 / custom | Standard, well-tested |
-| Real camera interface | Lucid Vision Arena SDK | Hardware available |
-| Version control | Git + GitHub | Public repo from day one |
+| Quadcopter simulator | Isaac Sim 4.5 + Pegasus 5.1.0 | Physics-accurate, Iris quadrotor, NVIDIA-supported |
+| Event camera simulator | v2e 1.5.1 + SuperSloMo | 980µs timestamp resolution, DAVIS346, no ROS required |
+| SNN framework | SpikingJelly | PyTorch-based surrogate gradient, active community |
+| Cloud GPU | Brev + Crusoe (L40s 48GB) | RTX GPU required for Isaac Sim renderer |
+| Real camera interface | Lucid Vision Arena SDK | Hardware available at Imperial |
+
+Dropped:
+- **Flightmare** — unmaintained, no event camera support
+- **Aerial Gym** — requires legacy Isaac Gym, incompatible with Isaac Lab
+
+---
+
+## Biological Inspiration: LGMD
+
+The core SNN architecture is modelled on the **Locust LGMD (Lobula Giant Movement Detector)**, one of the best-characterised collision-avoidance neurons in biology.
+
+**Why LGMD:**
+- Responds selectively to looming stimuli (objects expanding in the visual field)
+- Lateral inhibition suppresses background optic flow — robust to ego-motion
+- Output (DCMD) is a single spike-rate signal: collision imminence
+- Well-documented computational models (Rind & Bramwell 1996; Stafford 2007)
+- Prior SNN implementations exist as reference (Meng et al. 2023)
+- Maps naturally onto event camera output: expanding edge = burst of radial ON events
+
+**Scenario design driven by biology:**
+- Drone hovers in place (PID hold) → minimises background optic flow
+- Obstacles launched toward drone → maximises looming signal
+- This is the exact stimulus LGMD is tuned for
+
+---
+
+## Simulation Scenario
+
+1. Iris quadrotor hovers at fixed point with PID controller
+2. `DynamicCuboid` obstacles launched at drone from various angles/speeds
+3. Event camera (DAVIS346, 346×260) captures expanding silhouette
+4. v2e converts frames to synthetic events (SuperSloMo 17× upsampling, 980µs resolution)
+5. LGMD SNN processes event stream → DCMD collision-imminence output
+6. Evasion controller: DCMD spike rate > threshold → lateral thrust override
 
 ---
 
 ## Phases
 
-### Phase 1 — Foundations (Weeks 1–3) ~120 hrs
+### Phase 1 — Foundations (Weeks 1–3) ✓ Complete
 
-**Goal:** Everything running, talking to each other, a quadcopter flying in simulation with synthetic event data being generated.
+**Week 1 — Environment setup** ✓
+- Isaac Sim 4.5 + Pegasus 5.1.0 installed on Brev/Crusoe L40s
+- Physics validated: `sim/headless_hover_test.py` — Iris falls under gravity, ~700 steps/sec
+- Repo structure, GitHub, setup.sh deployment script
 
-**Week 1 — Environment setup**
-- Install and configure Flightmare, v2e, SpikingJelly
-- Get a quadcopter flying in Flightmare with basic PID control
-- Understand Flightmare's observation/action space
-- Set up project repo with clear structure from day one
+**Week 2 — Event camera pipeline** ✓
+- `events/capture_and_convert.py`: Isaac Sim → 502 frames → v2e → 1.31M events
+- SuperSloMo 17× upsampling, 980µs resolution, DAVIS346 (346×260)
+- Isaac Sim 4.5 compatibility fixes: `MonocularCameraIsaacSim45`, `Backend` base class
+- Event format confirmed: HDF5 `(N, 4)` uint32 `[timestamp_us, x, y, polarity]`
+- `events/visualise_events.py`: accumulation-window video renderer
 
-**Week 2 — Event camera integration**
-- Pipe Flightmare rendered frames through v2e to generate synthetic events
-- Visualise event streams — understand what obstacle scenarios look like in event space
-- Characterise the noise and quality of v2e output vs real EVS data
-- Start building the data ingestion pipeline
+**Week 3 — SNN foundations** ← current
+- [ ] Define LGMD SNN architecture in SpikingJelly
+- [ ] Implement event encoding: ON/OFF channels → spike frames
+- [ ] Validate pipeline: looming event sequence → SNN → DCMD output
 
-**Week 3 — SNN foundations**
-- Implement a basic SNN in SpikingJelly — get comfortable with surrogate gradient training
-- Define event data encoding strategy (rate coding vs temporal coding vs population coding)
-- Build the bridge: event stream → SNN input representation
-- Simple classification task to validate the pipeline end-to-end
-
-**Milestone:** Synthetic event data flowing into an SNN, quadcopter flying in sim.
+**Milestone:** Event data flowing into LGMD SNN, basic looming detection working.
 
 ---
 
-### Phase 2 — SNN Policy Development (Weeks 4–8) ~200 hrs
+### Phase 2 — Dynamic Obstacle Scene + LGMD Training (Weeks 4–8)
 
-**Goal:** A trained SNN policy that achieves reliable obstacle avoidance in simulation.
+**Week 4 — Dynamic obstacle simulation**
+- `sim/hover_evasion_capture.py`: hovering drone + `DynamicCuboid` launched at it
+- Vary obstacle speed (2–8 m/s), size, and approach angle
+- Generate diverse looming event dataset
 
-**Week 4 — Environment design**
-- Design obstacle avoidance task in Flightmare — start simple (single static obstacle, open space)
-- Define reward function: forward progress + collision penalty + energy efficiency term
-- Define observation space: event frame representation fed to SNN
-- Define action space: velocity commands or rotor thrusts
+**Week 5 — LGMD SNN training**
+- Supervised training: looming event sequence → DCMD spike rate label
+- Loss: spike count vs expected collision-imminence curve
+- Baseline: frame-based CNN on same task (efficiency comparison for paper)
 
-**Week 5 — Baseline**
-- Implement a frame-based CNN baseline for the same task — this is your comparison point for the paper
-- Train baseline to a working level
-- Document performance metrics clearly
+**Weeks 6–7 — Evasion controller**
+- DCMD output → lateral thrust/pitch/roll override
+- Closed-loop sim: hover → detect → evade → re-hover
+- Curriculum: slow obstacles → fast, single → multiple
 
-**Weeks 6–7 — SNN policy training**
-- Implement SNN policy architecture — start shallow, add depth if needed
-- Train using surrogate gradient backpropagation through time (BPTT)
-- Curriculum learning: begin with easy scenarios (single obstacle, slow speed), gradually increase difficulty
-- Expect this to be the hardest part — SNN training is finicky, budget time for debugging
+**Week 8 — Evaluation**
+- Metrics: evasion success rate, reaction latency, spike sparsity
+- SNN vs CNN baseline: accuracy, power, latency
+- Ablation: effect of lateral inhibition, temporal coding, accumulation window
 
-**Week 8 — Evaluation & tuning**
-- Systematic evaluation across obstacle densities, speeds, and environment layouts
-- Compare SNN vs CNN baseline: accuracy, latency, spike sparsity (this is your efficiency argument)
-- Tune reward function and architecture based on results
-
-**Milestone:** SNN policy achieving reliable obstacle avoidance in simulation, outperforming or matching baseline with demonstrably lower computational cost.
+**Milestone:** Closed-loop evasion in simulation with quantified metrics.
 
 ---
 
-### Phase 3 — Sim Validation & Real Camera Bridging (Weeks 9–11) ~120 hrs
+### Phase 3 — Sim Validation & Real Camera Bridging (Weeks 9–11)
 
-**Goal:** Validate sim results and begin closing the sim-to-real gap using real EVS hardware.
+**Week 9 — Stress testing**
+- Varied lighting, obstacle materials, approach profiles
+- Failure mode documentation (essential for paper)
+- Domain randomisation for sim-to-real
 
-**Week 9 — Stress testing simulation**
-- Test policy robustness: different lighting conditions, obstacle types, speeds
-- Identify failure modes — document them, this goes in the paper
-- Ablation studies: what happens without temporal coding? with rate coding only? — good paper content
-
-**Week 10 — Real EVS data collection**
-- Mount EVS camera, record event streams of obstacles in various scenarios (static setup, no drone yet)
-- Compare real event data characteristics vs v2e synthetic data — document the gap
-- Fine-tune v2e parameters to better match real camera output
+**Week 10 — Real EVS data**
+- Record real DAVIS346 data of approaching objects (bench test, no drone)
+- Characterise sim-to-real gap in event statistics
+- Fine-tune v2e parameters to match real camera
 
 **Week 11 — Domain adaptation**
-- Apply domain randomisation in simulation to improve real-world transfer
-- If gap is large: explore fine-tuning the policy on a small amount of real event data
-- Validate SNN input pipeline works with real camera data format
+- If gap is large: fine-tune on small real dataset
+- Validate SNN input pipeline with real camera format
 
-**Milestone:** Policy trained in sim successfully processing real EVS camera data in a static test.
+**Milestone:** Policy trained in sim processing real EVS data in static test.
 
 ---
 
-### Phase 4 — Real Hardware Deployment (Weeks 12–15) ~160 hrs
-
-**Goal:** SNN policy running onboard or tethered, avoiding real obstacles on a real quadcopter.
+### Phase 4 — Real Hardware Deployment (Weeks 12–15)
 
 **Week 12 — Hardware integration**
-- Mount EVS camera on quadcopter
-- Set up onboard compute pipeline: EVS → event encoding → SNN inference → motor commands
-- Low-level safety setup: kill switch, net enclosure, tether if needed
-- Ground tests: validate latency of full pipeline
+- Mount DAVIS346 on quadcopter
+- Pipeline: EVS → encoding → SNN → motor commands
+- Safety setup: kill switch, net enclosure
 
-**Week 13 — Tethered flight tests**
-- Begin with tethered/constrained flight, single obstacle
-- Identify and fix integration issues
-- Validate that sim-trained policy generalises — expect it to partially work, partially fail
-
-**Week 14 — Iterative real-world refinement**
-- Fine-tune policy based on real flight data if needed
-- Gradually increase obstacle complexity
-- Collect flight data for paper
+**Week 13–14 — Tethered and iterative flight**
+- Tethered tests with single incoming obstacle
+- Real-world fine-tuning if needed
 
 **Week 15 — Full demo**
-- Untethered obstacle avoidance in a structured environment
-- Record high quality video — essential for paper submission and GitHub
-- Collect quantitative metrics: success rate, collision rate, speed
+- Untethered obstacle avoidance
+- Record video for paper + GitHub
 
-**Milestone:** Quadcopter avoiding obstacles autonomously using SNN + event camera.
+**Milestone:** Quadcopter autonomously evading incoming obstacles with event camera + SNN.
 
 ---
 
-### Phase 5 — Paper & Release (Weeks 16–18) ~120 hrs
+### Phase 5 — Paper & Release (Weeks 16–18)
 
-**Goal:** Submit to a top venue and release clean open-source code.
+**Core paper argument:**
+> Event cameras produce sparse, asynchronous spikes when edges move — exactly the stimulus the locust LGMD is tuned to detect. We show that an SNN modelled on the LGMD circuit detects incoming collisions from event camera data with lower latency and power than frame-based CNN approaches, and transfers from simulation to real hardware.
 
-**Week 16 — Paper writing**
-- Structure: Introduction → Related Work → Method → Experiments → Results → Conclusion
-- Key contributions to argue:
-  1. Event cameras and SNNs are a natural match for high-speed reactive flight
-  2. Demonstrated sim-to-real transfer
-  3. Efficiency comparison vs frame-based CNN baseline
-- Target venue: **CoRL** (Conference on Robot Learning) or **ICRA** — check deadlines now and work backwards
+**Key contributions:**
+1. LGMD-inspired SNN architecture for event-based looming detection
+2. Sim-to-real transfer via v2e + domain randomisation
+3. Efficiency comparison: SNN vs CNN (sparsity, latency, energy)
+4. Real quadcopter demo
 
-**Week 17 — Paper refinement + figures**
-- Clear figures are half the battle in robotics papers
-- Must-have: architecture diagram, sim vs real event data comparison, quantitative results table, trajectory plots
-- Video submission — most robotics venues accept/encourage supplementary video
-
-**Week 18 — Open source release**
-- Clean, documented codebase
-- README with clear setup instructions
-- Example data so people can run it without hardware
-- Pretrained model weights
-- Submit paper
+**Target:** CoRL / ICRA — check deadlines and work backwards.
 
 ---
 
@@ -162,29 +164,20 @@
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| SNN training instability | High | Start with shallow networks, validate surrogate gradient implementation on simple tasks first |
-| Large sim-to-real gap in event data | High | Characterise gap early (Week 10), apply domain randomisation, budget time for fine-tuning |
-| Quadcopter integration issues | Medium | Start tethered, have a frame-based fallback controller for safety |
-| Compute bottleneck for training | Medium | Use Brev/cloud GPU for training runs, develop locally |
-| Paper deadline pressure | Medium | Check CoRL/ICRA deadlines now and work backwards to set internal milestones |
-
----
-
-## Paper Argument (Core Thesis)
-
-> Event cameras produce sparse, asynchronous data with microsecond timing. SNNs process information as sparse, asynchronous spikes. This representational alignment means the combination is uniquely suited to high-speed reactive robotics — delivering lower latency, lower power consumption, and better temporal resolution than conventional frame-based CNN approaches.
-
-This is what makes it more than an engineering project — it's a scientific argument about why this pairing is principled, not just novel.
+| LGMD SNN insufficient for noisy real events | Medium | Domain randomisation + fine-tuning on small real dataset |
+| Sim-to-real event statistics gap | High | Characterise early (Week 10), tune v2e noise params |
+| SNN training instability | Medium | Start shallow, validate on synthetic looming sequences first |
+| Quadcopter integration issues | Medium | Tethered tests, frame-based fallback controller |
+| Isaac Sim API changes | Low | Compatibility fixes already in place; version-pinned |
 
 ---
 
 ## Timeline Summary
 
-| Phase | Weeks | Hours |
+| Phase | Weeks | Status |
 |---|---|---|
-| 1. Foundations | 1–3 | ~120 |
-| 2. SNN Policy Development | 4–8 | ~200 |
-| 3. Sim Validation & Real Bridging | 9–11 | ~120 |
-| 4. Real Hardware Deployment | 12–15 | ~160 |
-| 5. Paper & Release | 16–18 | ~120 |
-| **Total** | **18 weeks** | **~720 hrs** |
+| 1. Foundations | 1–3 | Week 1–2 complete |
+| 2. Dynamic Scene + LGMD Training | 4–8 | Upcoming |
+| 3. Sim Validation & Real Bridging | 9–11 | Upcoming |
+| 4. Real Hardware Deployment | 12–15 | Upcoming |
+| 5. Paper & Release | 16–18 | Upcoming |
