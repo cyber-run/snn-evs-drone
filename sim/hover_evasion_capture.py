@@ -8,8 +8,8 @@ Generates training data for the LGMD SNN:
   - Obstacle trajectory + drone position saved as metadata
 
 Output:
-  /tmp/sim_frames_evasion/          PNG frames
-  /tmp/sim_frames_evasion/meta.npz  Trajectory metadata (obstacle pos, drone pos, sim_dt)
+  /tmp/sim_frames_evasion/          PNG frames (only)
+  /tmp/sim_meta_evasion/meta.npz    Trajectory metadata (kept separate so v2e ignores it)
   /tmp/sim_events_evasion/events.h5 Synthetic events with trajectory embedded
 
 Usage:
@@ -32,6 +32,7 @@ import argparse
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 FRAME_DIR  = "/tmp/sim_frames_evasion"
+META_DIR   = "/tmp/sim_meta_evasion"    # separate from frames so v2e ignores it
 EVENT_DIR  = "/tmp/sim_events_evasion"
 RESOLUTION = (346, 260)   # DAVIS346
 FPS        = 60
@@ -323,8 +324,9 @@ def run_simulation(args):
     done(f"Captured {backend.frame_count} frames  |  "
          f"{len(backend.drone_positions)} trajectory points")
 
-    # Save trajectory metadata
-    meta_path = os.path.join(FRAME_DIR, "meta.npz")
+    # Save trajectory metadata to a separate directory so v2e doesn't read it as a frame
+    os.makedirs(META_DIR, exist_ok=True)
+    meta_path = os.path.join(META_DIR, "meta.npz")
     drone_pos_arr = np.array(backend.drone_positions, dtype=np.float32)
     obs_pos_arr   = np.array(backend.obstacle_positions, dtype=np.float32)
 
@@ -397,7 +399,7 @@ def _embed_trajectory(h5_path: str):
     """Merge trajectory metadata from meta.npz into the events.h5 file."""
     import h5py
 
-    meta_path = os.path.join(FRAME_DIR, "meta.npz")
+    meta_path = os.path.join(META_DIR, "meta.npz")
     if not os.path.exists(meta_path):
         print("[WARN] meta.npz not found — trajectory data will not be in events.h5")
         return
