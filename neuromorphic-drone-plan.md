@@ -85,13 +85,20 @@ The core SNN architecture is modelled on the **Locust LGMD (Lobula Giant Movemen
 
 ### Phase 2 — Dynamic Obstacle Scene + LGMD Training (Weeks 4–8) ← current
 
-**Week 4 — Data regeneration + diverse profiles**
-- [ ] Regenerate all profiles with gravity fix applied (`--name head_on`, `lateral`, `diagonal`, `high`, `low`)
-- [ ] Retrain on 5 profiles; target loss < 0.035
-- [ ] Validate DCMD output shape matches looming approach (peaks as obstacle approaches)
+**Week 4 — Data quality diagnosis + simulation fixes** ← in progress
+- [x] Diagnose root cause of training failure: textureless obstacle + dynamic environment artifacts + label misalignment
+  - "Curved Gridroom" produced up to 581 K spurious events/bin from animated lighting while obstacle was stationary
+  - Solid-colour obstacle generated only ~84 events/bin looming signal (< background noise at 91 events/bin)
+  - `make_label_from_trajectory` used uniform fraction resampling instead of physical time axis
+- [x] Fix simulation: Black Gridroom + checkerboard texture + 1.0 m obstacle + 8–10 m/s approach + 0.5 s warmup
+- [x] Fix label alignment: `dθ/dt` mapped via physical time axis (µs timestamps ↔ sim step × sim_dt)
+- [x] SNN model fixes: LIF v_threshold 0.5, `dcmd_weight` fixed buffer, `net_exc` auxiliary signal
+- [x] Training improvements: recording-level val split, combined Pearson loss, per-epoch validation metrics
+- [ ] **Regenerate all 5 profiles** with updated `hover_evasion_capture.py` and retrain
+- [ ] Validate: DCMD peaks during looming phase; Pearson val_corr > 0.5
 
 **Week 5 — LGMD SNN training refinement**
-- [ ] Supervised training on full multi-profile dataset
+- [ ] Supervised training on full 5-profile dataset
 - [ ] Frame-based CNN baseline on same task (efficiency comparison for paper)
 - [ ] Ablation: effect of lateral inhibition delay, pooling factor, time bin size
 
@@ -179,8 +186,8 @@ The core SNN architecture is modelled on the **Locust LGMD (Lobula Giant Movemen
 
 | Phase | Weeks | Status |
 |---|---|---|
-| 1. Foundations | 1–3 | Week 1–2 complete |
-| 2. Dynamic Scene + LGMD Training | 4–8 | Upcoming |
+| 1. Foundations | 1–3 | Complete ✓ |
+| 2. Dynamic Scene + LGMD Training | 4–8 | Week 4 in progress |
 | 3. Sim Validation & Real Bridging | 9–11 | Upcoming |
 | 4. Real Hardware Deployment | 12–15 | Upcoming |
 | 5. Paper & Release | 16–18 | Upcoming |

@@ -1,5 +1,87 @@
 # Changelog
 
+## [Unreleased] — Session 3
+
+### Root cause: simulation data quality
+
+Diagnostic analysis of `events.h5` files revealed the training data was fundamentally
+flawed in three ways, preventing any positive Pearson correlation from being learned:
+
+1. **Textureless obstacle** — a solid-colour cube only generates events at its perimeter
+   edges (~18 px at 5 m). Interior of the approaching face was silent, making the looming
+   signal orders of magnitude weaker than expected.
+2. **Dynamic environment artifacts** — the "Curved Gridroom" environment has animated
+   sky/lighting that produced event spikes up to **581 K events/bin** while the obstacle was
+   stationary, dwarfing the 84 events/bin looming signal (which was actually *less* than
+   background noise at 91 events/bin, due to the obstacle occluding background texture).
+3. **Label misalignment** — `make_label_from_trajectory` used uniform fraction resampling
+   (`np.linspace(0,1)`) rather than physical time axes, causing the `dθ/dt` peak to map
+   to the wrong bins — especially bad with a 2 s warmup (20% of the recording).
+
+### Changed — `sim/hover_evasion_capture.py`
+
+- **Environment**: switched from `"Curved Gridroom"` to **`"Black Gridroom"`** — static
+  grid, no animated sky or lighting, zero background event noise.
+- **Checkerboard texture** applied to the obstacle via OmniPBR material:
+  - 256×256 image, 8×8 tile grid (32 px tiles), written to `/tmp/obstacle_checker.png`
+  - Every contrast boundary across the cube face fires events on approach — dense looming
+    signal across the entire obstacle face, not just its edges.
+- **Obstacle scale**: `0.5 m → 1.0 m` cube. Larger angular size at launch; more edge
+  pixels even before the texture contribution; `OBSTACLE_HALF_SIZE` updated to `0.5 m`.
+- **Approach speed**: 5 m/s → **8–10 m/s** across all profiles; launch distance reduced
+  from 8 m → 6 m. Obstacle reaches the drone within ~0.6 s of launch, producing a sharp,
+  rapid event burst the LGMD can lock on to.
+- **Warmup**: `2.0 s → 0.5 s` (just enough for physics to settle). Reduces the proportion
+  of stationary-obstacle frames from 20 % to ~6 %, so the looming phase dominates.
+- **`launch_step` metadata**: `np.int32(WARMUP_STEPS)` now saved to `meta.npz`/`events.h5`
+  so the training script can compute physically-aligned labels.
+- **Subprocess pass-through**: `--name` flag now forwarded to the v2e subprocess call so
+  output directories are consistent end-to-end.
+- **Frame extension**: camera frame files now saved as `.bmp` (lossless); `--v2e-only`
+  file count corrected to match `.bmp` extension.
+
+### Updated approach profiles
+
+| Profile | Launch pos (m) | Velocity (m/s) |
+|---|---|---|
+| `head_on` | (6, 0, 1.5) | (-10, 0, 0) |
+| `lateral` | (6, 3, 1.5) | (-8, -4, 0) |
+| `high` | (6, 0, 3.5) | (-8, 0, -2) |
+| `low` | (6, 0, -0.5) | (-8, 0, 2) |
+| `diagonal` | (5, 5, 1.5) | (-6, -6, 0) |
+
+### Changed — `snn/training/train_lgmd.py`
+
+- **`make_label_from_trajectory` — physical time alignment**:
+  - Now builds a real-time axis `traj_t_s = step × sim_dt` for the trajectory samples.
+  - Converts event bin timestamps from µs to seconds: `event_t_s = ts_µs × 1e-6`.
+  - Uses `np.interp` on matched physical axes so each event bin receives the `dθ/dt` value
+    for the *correct simulation time* — regardless of warmup duration or recording length.
+  - Reads `launch_step` from H5 metadata if present (graceful fallback for older files).
+- **Recording-level train/val split** via `--val_h5` argument: hold out one full recording
+  (default: `diagonal` profile) to catch per-profile overfitting.
+- **DCMD normalisation**: divided by fixed pixel count `h×w` instead of per-batch max,
+  giving stable gradients across batches.
+- **Loss function** (`combined_loss`): window-level Pearson correlation weighted sum of
+  `net_exc` (rectified post-inhibition excitation, 80 %) and `dcmd` (20 %), plus a small
+  background-suppression L1 penalty on `net_exc`.
+- **Validation loop** reports `val_loss`, Pearson `val_corr`, `DCMD_loom`, and `DCMD_bg`
+  each epoch for early stopping and diagnosis.
+
+### Changed — `snn/models/lgmd_net.py`
+
+- **LIF threshold**: `v_threshold 1.0 → 0.5` so the neuron fires at physiologically
+  plausible input levels (SpikingJelly integrates `input/tau`, not raw `input`).
+- **`dcmd_weight`**: converted from learnable `nn.Parameter` → fixed `register_buffer`
+  with uniform weights `1/(h×w)`. Prevents the model from overfitting to pixel locations
+  in the training set while leaving convolutional layers free to learn features.
+- **`forward` return signature** now `(dcmd, spikes, net_exc)`:
+  - `net_exc = lgmd_in.clamp(min=0).mean(dim=(-1,-2,-3))` — rectified post-inhibition
+    excitation, positive only where looming edges survive lateral suppression; used as the
+    primary auxiliary training signal in `combined_loss`.
+
+---
+
 ## [Unreleased] — Session 2
 
 ### Added
@@ -79,7 +161,8 @@
 
 ## Known Issues / Next Session
 
-- **Training data invalid**: all H5 files generated before the gravity fix contain obstacle-on-ground data; regenerate all profiles after pulling latest
-- `sim_dt` stored in metadata is `1/FPS` (1/120) but actual trajectory sampling is ~1/240 (physics runs 2 substeps per render step); absolute dθ/dt scale is off by ~2×. Labels are normalised so training is unaffected, but worth fixing for future quantitative analysis
-- Only 2 profiles (head_on, lateral) trained on so far — need diagonal, high, low for better generalisation
-- No closed-loop evasion controller yet — LGMD output not wired to rotor commands
+- **Regenerate all H5 files** using the updated `hover_evasion_capture.py` (Black Gridroom + checkerboard texture + new speeds/warmup) before training — all previously generated data had textureless obstacles and dynamic-environment artifacts and should be discarded.
+- `sim_dt` stored in metadata is `1/FPS` (1/120) but actual trajectory sampling is ~1/240 (physics runs 2 substeps per render step); absolute dθ/dt scale is off by ~2×. Labels are normalised so training is unaffected, but worth fixing for future quantitative analysis.
+- Checkerboard texture applied via OmniPBR; if Isaac Sim USD binding fails at runtime the obstacle falls back to a solid light-grey colour (a warning is printed). Verify in first run.
+- Only 2 profiles (head_on, lateral) trained on so far — regenerate and train all 5 profiles for better generalisation.
+- No closed-loop evasion controller yet — LGMD output not wired to rotor commands.

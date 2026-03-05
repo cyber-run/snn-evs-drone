@@ -35,8 +35,8 @@ Event Camera (DAVIS346)
   LGMD SNN (SpikingJelly)
   ├── Excitation conv (2→1, 3×3): ON events excite, OFF weakly inhibit
   ├── Lateral inhibition (7×7 Gaussian, 1-step delay): suppresses background motion
-  ├── LIF neurons per spatial location
-  └── DCMD readout: learnable spatial weighting → global sum → collision-imminence spike rate
+  ├── LIF neurons per spatial location (v_threshold=0.5)
+  └── DCMD readout: fixed uniform spatial weighting → global sum → collision-imminence spike rate
         │
         ▼
   Evasion controller
@@ -80,22 +80,28 @@ docs/         Notes, architecture diagrams
 The training scenario is designed to produce clean looming events matching what LGMD is tuned for:
 
 1. Iris quadrotor hovers at fixed point (altitude P+D controller, base throttle 568 rad/s)
-2. `DynamicCuboid` obstacle holds position at launch point during 2s warmup (gravity disabled)
-3. At step 240, obstacle launched toward drone with configured velocity
-4. Camera captures expanding silhouette at 120 FPS → 1100+ frames per 10s run
-5. v2e converts frames to synthetic events with SuperSloMo ~9× upsampling (~926µs resolution)
-6. Trajectory metadata (obstacle positions, drone position, sim_dt) embedded into `events.h5`
-7. LGMD SNN trained on analytical `dθ/dt` label derived from trajectory
+2. Environment: **Black Gridroom** — static grid background, no animated lighting or sky
+3. `DynamicCuboid` obstacle (1.0 m cube, **checkerboard texture**) holds at launch point during 0.5 s warmup (gravity disabled)
+4. At step 60, obstacle launched toward drone at 8–10 m/s — fills FOV rapidly, generating a dense looming event burst
+5. Camera captures expanding face at 120 FPS → ~960 frames per 8 s run (lossless BMP)
+6. v2e converts frames to synthetic events with SuperSloMo ~9× upsampling (~926 µs resolution)
+7. Trajectory metadata (obstacle positions, drone position, sim_dt, launch_step) embedded into `events.h5`
+8. LGMD SNN trained on analytical `dθ/dt` label with **physically-aligned time axis** (µs timestamps matched to sim time)
+
+**Why checkerboard texture?**
+A uniform solid-colour cube generates events only at its expanding perimeter edges — ~18 px at 5 m distance.
+A checkerboard creates a grid of high-contrast boundaries across the entire face; every tile edge fires as the
+cube translates even a fraction of a pixel, providing orders-of-magnitude more looming signal.
 
 ### Approach profiles
 
-| Profile | Launch pos (m) | Velocity (m/s) |
-|---|---|---|
-| `head_on` | (8, 0, 1.5) | (-5, 0, 0) |
-| `lateral` | (8, 3, 1.5) | (-5, -2, 0) |
-| `high` | (8, 0, 3.5) | (-5, 0, -1.5) |
-| `low` | (8, 0, 0.2) | (-5, 0, 1) |
-| `diagonal` | (6, 6, 1.5) | (-3.5, -3.5, 0) |
+| Profile | Launch pos (m) | Velocity (m/s) | Approx. time-to-contact |
+|---|---|---|---|
+| `head_on` | (6, 0, 1.5) | (-10, 0, 0) | ~0.6 s |
+| `lateral` | (6, 3, 1.5) | (-8, -4, 0) | ~0.8 s |
+| `high` | (6, 0, 3.5) | (-8, 0, -2) | ~0.8 s |
+| `low` | (6, 0, -0.5) | (-8, 0, 2) | ~0.8 s |
+| `diagonal` | (5, 5, 1.5) | (-6, -6, 0) | ~0.6 s |
 
 ## Setup
 
@@ -141,8 +147,13 @@ python sim/hover_evasion_capture.py --v2e-only --name lateral
 # Output: /tmp/evasion_{name}_events/events.h5 with trajectory metadata embedded
 
 # 3. Train LGMD SNN on one or more recordings
+#    --val_h5 holds out a full recording for validation (default: diagonal profile)
 python snn/training/train_lgmd.py \
-  --h5 /tmp/evasion_head_on_events/events.h5 /tmp/evasion_lateral_events/events.h5 \
+  --h5 /tmp/evasion_head_on_events/events.h5 \
+      /tmp/evasion_lateral_events/events.h5 \
+      /tmp/evasion_high_events/events.h5 \
+      /tmp/evasion_low_events/events.h5 \
+  --val_h5 /tmp/evasion_diagonal_events/events.h5 \
   --epochs 50 --batch 8 --dt_us 10000 --n_bins 20 \
   --save results/lgmd_weights.pt
 

@@ -8,7 +8,7 @@ Generates training data for the LGMD SNN:
   - Obstacle trajectory + drone position saved as metadata
 
 Output:
-  /tmp/sim_frames_evasion/          PNG frames (only)
+  /tmp/sim_frames_evasion/          BMP frames (lossless, fast write)
   /tmp/sim_meta_evasion/meta.npz    Trajectory metadata (kept separate so v2e ignores it)
   /tmp/sim_events_evasion/events.h5 Synthetic events with trajectory embedded
 
@@ -42,19 +42,22 @@ FPS        = 120          # camera + renderer Hz (physics runs at 250 Hz interna
 SIM_DT     = 1.0 / FPS   # simulated time per step
 
 DRONE_SPAWN   = [0.0, 0.0, 1.5]   # metres — hover target
-WARMUP_STEPS  = int(2.0 * FPS)    # 2 s warmup before obstacle launch
-TOTAL_STEPS   = int(10.0 * FPS)   # 10 s total recording
+WARMUP_STEPS  = int(0.5 * FPS)    # 0.5 s warmup — just enough for physics to settle
+TOTAL_STEPS   = int(8.0 * FPS)    # 8 s total recording
 
 # Obstacle half-extents used for angular velocity label computation
-OBSTACLE_HALF_SIZE = 0.25          # metres (0.5 m cube)
+# Obstacle scale below is 1.0 m (full side), so half-extent = 0.5 m
+OBSTACLE_HALF_SIZE = 0.5           # metres (1.0 m cube)
 
 # Approach profiles: (launch_x, launch_y, launch_z, speed_x, speed_y, speed_z)
+# Speeds increased to 8-10 m/s so the obstacle fills the FOV quickly,
+# generating a strong looming event burst for the LGMD to learn from.
 PROFILES = {
-    "head_on":  (8.0,  0.0,  1.5,  -5.0,  0.0,  0.0),
-    "lateral":  (8.0,  3.0,  1.5,  -5.0, -2.0,  0.0),
-    "high":     (8.0,  0.0,  3.5,  -5.0,  0.0, -1.5),
-    "low":      (8.0,  0.0,  0.2,  -5.0,  0.0,  1.0),
-    "diagonal": (6.0,  6.0,  1.5,  -3.5, -3.5,  0.0),
+    "head_on":  (6.0,  0.0,  1.5, -10.0,  0.0,  0.0),
+    "lateral":  (6.0,  3.0,  1.5,  -8.0, -4.0,  0.0),
+    "high":     (6.0,  0.0,  3.5,  -8.0,  0.0, -2.0),
+    "low":      (6.0,  0.0, -0.5,  -8.0,  0.0,  2.0),
+    "diagonal": (5.0,  5.0,  1.5,  -6.0, -6.0,  0.0),
 }
 
 
@@ -205,7 +208,7 @@ class HoverEvasionBackend(Backend):
             rgb = cam.get_rgb()
             if rgb is not None and rgb.size > 0:
                 bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
-                path = os.path.join(self.frame_dir, f"frame_{self.frame_count:06d}.png")
+                path = os.path.join(self.frame_dir, f"frame_{self.frame_count:06d}.bmp")
                 cv2.imwrite(path, bgr)
                 self.frame_count += 1
                 if self.frame_count % 60 == 0:
@@ -263,18 +266,57 @@ def run_simulation(args):
     world = pg.world
 
     stage("Loading environment")
-    pg.load_environment(SIMULATION_ENVIRONMENTS["Curved Gridroom"])
+    # Black Gridroom: static grid pattern, no dynamic/animated elements.
+    # Curved Gridroom had animated sky/lighting that caused massive background
+    # event spikes (~580 K events/bin) unrelated to the looming obstacle.
+    pg.load_environment(SIMULATION_ENVIRONMENTS["Black Gridroom"])
     done()
+
+    # ── Generate a high-contrast checkerboard texture for the obstacle ──────
+    # A uniform solid-color obstacle generates events ONLY at its expanding
+    # edges (~18 pixels at 5 m distance).  A checkerboard creates sharp
+    # contrast boundaries that fire events across the ENTIRE face of the cube
+    # as it moves, giving orders-of-magnitude more looming signal.
+    import cv2 as _cv2
+    _checker_path = "/tmp/obstacle_checker.png"
+    if not os.path.exists(_checker_path):
+        _img = np.zeros((256, 256, 3), dtype=np.uint8)
+        _tile = 32  # 8×8 grid of tiles
+        for _i in range(256 // _tile):
+            for _j in range(256 // _tile):
+                if (_i + _j) % 2 == 0:
+                    _img[_i*_tile:(_i+1)*_tile, _j*_tile:(_j+1)*_tile] = 230
+        _cv2.imwrite(_checker_path, _img)
+    done(f"Checkerboard texture: {_checker_path}")
 
     stage("Adding dynamic obstacle (gravity disabled — floats until launched)")
     obstacle = world.scene.add(DynamicCuboid(
         prim_path="/World/obstacle",
         name="obstacle",
         position=launch_pos,
-        scale=np.array([0.5, 0.5, 0.5]),
-        color=np.array([0.9, 0.2, 0.1]),
+        scale=np.array([1.0, 1.0, 1.0]),   # 1 m cube — larger = more edge pixels
+        color=np.array([0.9, 0.9, 0.9]),   # will be overridden by texture below
         mass=1.0,
     ))
+
+    # Apply checkerboard texture via OmniPBR material
+    try:
+        from pxr import UsdShade, Sdf
+        _stage_usd = world.stage
+        _mat = UsdShade.Material.Define(_stage_usd, "/World/ObstacleMat")
+        _sh  = UsdShade.Shader.Define(_stage_usd, "/World/ObstacleMat/Shader")
+        _sh.SetSourceAsset(Sdf.AssetPath("OmniPBR.mdl"), "mdl")
+        _sh.SetSourceAssetSubIdentifier("OmniPBR", "mdl")
+        _sh.CreateInput("diffuse_texture",
+                        Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(_checker_path))
+        _mat.CreateSurfaceOutput().ConnectToSource(_sh.ConnectableAPI(), "surface")
+        from pxr import UsdShade as _US
+        _US.MaterialBindingAPI.Apply(
+            _stage_usd.GetPrimAtPath("/World/obstacle")
+        ).Bind(_mat)
+        done("Checkerboard material applied to obstacle")
+    except Exception as _e:
+        done(f"[warn] Could not apply texture ({_e}); using solid color")
     # Disable gravity so the obstacle stays at launch height during warmup.
     # PhysxSchema is the correct Isaac Sim 4.5 API for per-body gravity control.
     from pxr import PhysxSchema
@@ -351,6 +393,7 @@ def run_simulation(args):
              obstacle_radius=np.float32(OBSTACLE_HALF_SIZE),
              sim_dt=np.float32(SIM_DT),
              warmup_steps=np.int32(WARMUP_STEPS),
+             launch_step=np.int32(WARMUP_STEPS),      # exact step when obstacle started moving
              launch_velocity=launch_vel.astype(np.float32))
 
     done(f"Trajectory metadata saved to {meta_path}")
@@ -393,7 +436,7 @@ def run_v2e(num_frames):
         f"--output_width {RESOLUTION[0]} "
         f"--output_height {RESOLUTION[1]} "
         f"--dvs_h5 events.h5 "
-        f"--batch_size 8 "
+        f"--batch_size 64 "
         f"2>&1"
     )
     print(f"\n  Running: {cmd}\n")
@@ -464,7 +507,7 @@ if __name__ == "__main__":
 
     if args.v2e_only:
         run_v2e(len([f for f in os.listdir(FRAME_DIR)
-                     if f.endswith(".png")]) if os.path.exists(FRAME_DIR) else 0)
+                     if f.endswith(".bmp")]) if os.path.exists(FRAME_DIR) else 0)
     elif args.sim_only:
         run_simulation(args)
     else:
@@ -472,4 +515,5 @@ if __name__ == "__main__":
         num_frames = run_simulation(args)
         if num_frames > 0:
             print(f"\nLaunching v2e subprocess on {num_frames} frames...")
-            subprocess.run([sys.executable, __file__, "--v2e-only"])
+            subprocess.run([sys.executable, __file__,
+                            "--v2e-only", "--name", run_name])
