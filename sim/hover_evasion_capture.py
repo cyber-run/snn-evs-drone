@@ -37,12 +37,13 @@ FRAME_DIR  = f"{_BASE}_frames"
 META_DIR   = f"{_BASE}_meta"   # separate from frames so v2e ignores it
 EVENT_DIR  = f"{_BASE}_events"
 RESOLUTION = (346, 260)   # DAVIS346
-FPS        = 60
-SIM_DT     = 1.0 / FPS   # physics step matches camera rate
+FPS        = 120          # camera + renderer Hz (physics runs at 250 Hz internally)
+                          # 60→17× SloMo, 120→9× SloMo, 240→4× SloMo
+SIM_DT     = 1.0 / FPS   # simulated time per step
 
 DRONE_SPAWN   = [0.0, 0.0, 1.5]   # metres — hover target
-WARMUP_STEPS  = 120                # 2 s at 60 Hz — let drone stabilise before launch
-TOTAL_STEPS   = 600                # 10 s total recording
+WARMUP_STEPS  = int(2.0 * FPS)    # 2 s warmup before obstacle launch
+TOTAL_STEPS   = int(10.0 * FPS)   # 10 s total recording
 
 # Obstacle half-extents used for angular velocity label computation
 OBSTACLE_HALF_SIZE = 0.25          # metres (0.5 m cube)
@@ -256,6 +257,8 @@ def run_simulation(args):
 
     timeline = omni.timeline.get_timeline_interface()
     pg = PegasusInterface()
+    # Match rendering rate to camera FPS (physics stays at 250 Hz internally)
+    pg._world_settings["rendering_dt"] = 1.0 / FPS
     pg._world = World(**pg._world_settings)
     world = pg.world
 
