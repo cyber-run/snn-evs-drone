@@ -7,6 +7,10 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$HOME/isaaclab-env"
 ISAACLAB_DIR="$HOME/IsaacLab"
 
+# Accept NVIDIA Omniverse EULA non-interactively
+export OMNI_ACCEPT_EULA=Y
+export NVIDIA_ACCEPT_EULA=Y
+
 echo "[1/5] Installing system dependencies..."
 sudo apt-get update -q
 sudo apt-get install -y cmake git python3-venv python3-pip
@@ -27,8 +31,11 @@ cd "$ISAACLAB_DIR"
 ./isaaclab.sh --install
 
 echo "[5/5] Installing project dependencies..."
-cd "$REPO_DIR"
-pip install -r requirements.txt
+PROJECT_DIR="$HOME/snn-evs-drone"
+if [ ! -d "$PROJECT_DIR" ]; then
+    git clone https://github.com/cyber-run/snn-evs-drone.git "$PROJECT_DIR"
+fi
+pip install -r "$PROJECT_DIR/requirements.txt"
 
 # Persist venv activation in .bashrc
 if ! grep -q "isaaclab-env" ~/.bashrc; then
