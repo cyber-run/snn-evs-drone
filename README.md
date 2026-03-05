@@ -154,7 +154,7 @@ python snn/training/train_lgmd.py \
       /tmp/evasion_high_events/events.h5 \
       /tmp/evasion_low_events/events.h5 \
   --val_h5 /tmp/evasion_diagonal_events/events.h5 \
-  --epochs 50 --batch 8 --dt_us 10000 --n_bins 20 \
+  --augment \
   --save results/lgmd_weights.pt
 
 # 4. Visualise event stream

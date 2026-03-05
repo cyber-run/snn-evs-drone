@@ -31,8 +31,9 @@ flawed in three ways, preventing any positive Pearson correlation from being lea
 - **Approach speed**: 5 m/s → **8–10 m/s** across all profiles; launch distance reduced
   from 8 m → 6 m. Obstacle reaches the drone within ~0.6 s of launch, producing a sharp,
   rapid event burst the LGMD can lock on to.
-- **Warmup**: `2.0 s → 0.5 s` (just enough for physics to settle). Reduces the proportion
-  of stationary-obstacle frames from 20 % to ~6 %, so the looming phase dominates.
+- **Warmup**: `2.0 s → 1.5 s` (initially reduced to 0.5 s, then raised to 1.5 s to push
+  the checkerboard texture-activation spike safely into early warmup). Data generated
+  during this session used the 0.5 s warmup; regeneration with 1.5 s pending.
 - **`launch_step` metadata**: `np.int32(WARMUP_STEPS)` now saved to `meta.npz`/`events.h5`
   so the training script can compute physically-aligned labels.
 - **Subprocess pass-through**: `--name` flag now forwarded to the v2e subprocess call so

@@ -119,7 +119,7 @@ class LGMDNet(nn.Module):
         spikes  = self.lgmd_lif(lgmd_in)
 
         # DCMD: learned spatial weighting then global sum
-        dcmd = (spikes * torch.abs(self.dcmd_weight)).sum(dim=(-1, -2, -3))  # (T, B)
+        dcmd = (spikes * self.dcmd_weight).sum(dim=(-1, -2, -3))  # (T, B)
 
         # Return mean RECTIFIED post-inhibition excitation (T, B) for training.
         # Rectified lgmd_in = max(0, exc - background_inhibition).

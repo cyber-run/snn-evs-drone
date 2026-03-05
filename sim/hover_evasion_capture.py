@@ -389,10 +389,10 @@ def run_simulation(args):
     # points) so that traj[i] corresponds to frame i and sim_dt (= 1/FPS) is correct.
     physics_factor = max(1, round(raw_traj_len / TOTAL_STEPS))
     if physics_factor > 1:
-        tqdm.write(f"  Subsampling trajectory {physics_factor}× "
-                   f"({raw_traj_len} → {raw_traj_len // physics_factor} points)")
         obs_pos_arr   = obs_pos_arr[::physics_factor]
         drone_pos_arr = drone_pos_arr[::physics_factor]
+        tqdm.write(f"  Subsampled trajectory {physics_factor}× "
+                   f"({raw_traj_len} → {len(obs_pos_arr)} points)")
 
     # Hover position: mean of first WARMUP_STEPS render frames (before obstacle launches)
     stable_pos = drone_pos_arr[:WARMUP_STEPS].mean(axis=0)
@@ -511,9 +511,9 @@ if __name__ == "__main__":
 
     # Override output dirs based on --name (or auto-derive from --profile)
     run_name = args.name or args.profile or "default"
-    globals()["FRAME_DIR"] = f"/tmp/evasion_{run_name}_frames"
-    globals()["META_DIR"]  = f"/tmp/evasion_{run_name}_meta"
-    globals()["EVENT_DIR"] = f"/tmp/evasion_{run_name}_events"
+    FRAME_DIR = f"/tmp/evasion_{run_name}_frames"
+    META_DIR  = f"/tmp/evasion_{run_name}_meta"
+    EVENT_DIR = f"/tmp/evasion_{run_name}_events"
     print(f"Output dirs: frames={FRAME_DIR}  meta={META_DIR}  events={EVENT_DIR}")
 
     if args.v2e_only:
