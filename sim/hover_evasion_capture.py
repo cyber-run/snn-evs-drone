@@ -266,7 +266,7 @@ def run_simulation(args):
     pg.load_environment(SIMULATION_ENVIRONMENTS["Curved Gridroom"])
     done()
 
-    stage("Adding dynamic obstacle")
+    stage("Adding dynamic obstacle (gravity disabled — floats until launched)")
     obstacle = world.scene.add(DynamicCuboid(
         prim_path="/World/obstacle",
         name="obstacle",
@@ -275,7 +275,13 @@ def run_simulation(args):
         color=np.array([0.9, 0.2, 0.1]),
         mass=1.0,
     ))
-    done("Obstacle added")
+    # Disable gravity so the obstacle stays at launch height during warmup.
+    # PhysxSchema is the correct Isaac Sim 4.5 API for per-body gravity control.
+    from pxr import PhysxSchema
+    obstacle_prim = world.stage.GetPrimAtPath("/World/obstacle")
+    physx_rb = PhysxSchema.PhysxRigidBodyAPI.Apply(obstacle_prim)
+    physx_rb.GetDisableGravityAttr().Set(True)
+    done("Obstacle added (gravity disabled)")
 
     stage("Spawning quadrotor with camera")
     backend = HoverEvasionBackend(FRAME_DIR, max_frames=TOTAL_STEPS,
