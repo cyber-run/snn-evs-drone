@@ -299,8 +299,8 @@ def train(args):
 
     # Weighted sampling: oversample looming windows to balance the dataset
     weights = []
-    for ds in train_datasets:
-        weights.extend(ds.sample_weights(loom_weight=args.loom_weight))
+    for tds in train_datasets:
+        weights.extend(tds.sample_weights(loom_weight=args.loom_weight))
     sampler = WeightedRandomSampler(weights, len(weights), replacement=True)
 
     nw = min(args.num_workers, 4) if device.type == "cuda" else 0
