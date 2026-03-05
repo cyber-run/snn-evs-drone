@@ -173,18 +173,18 @@ def run_v2e(num_frames):
 
     cmd = (
         f"v2e "
-        f"--input_dir {FRAME_DIR} "
-        f"--output_folder {EVENT_DIR} "
+        f"-i {FRAME_DIR} "
+        f"-o {EVENT_DIR} "
         f"--overwrite "
-        f"--timestamp_resolution 0.001 "   # 1ms resolution
+        f"--timestamp_resolution 0.001 "
         f"--auto_timestamp_resolution false "
-        f"--dvs_exposure duration 0.005 "  # 5ms exposure window for visualisation
+        f"--dvs_exposure duration 0.005 "
         f"--input_frame_rate {FPS} "
-        f"--slomo_model SuperSloMo39.ckpt "  # will auto-download on first run
-        f"--no_preview "                     # headless, no GUI
-        f"--dvs346 "                         # DAVIS346 output format (346x260)
+        f"--no_preview "
+        f"--dvs346 "
         f"--output_width {RESOLUTION[0]} "
         f"--output_height {RESOLUTION[1]} "
+        f"--dvs_h5 events.h5 "       # raw event stream for SNN training
         f"--batch_size 4 "
         f"2>&1"
     )
@@ -197,10 +197,24 @@ def run_v2e(num_frames):
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+# NOTE: simulation_app.close() calls sys.exit(), so v2e must run in a child
+# process launched before close(), or as a separate script after this exits.
 
 if __name__ == "__main__":
-    num_frames = run_simulation()
-    if num_frames > 0:
-        run_v2e(num_frames)
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--sim-only", action="store_true", help="Only capture frames, skip v2e")
+    parser.add_argument("--v2e-only", action="store_true", help="Only run v2e on existing frames")
+    args = parser.parse_args()
+
+    if args.v2e_only:
+        run_v2e(len(os.listdir(FRAME_DIR)))
+    elif args.sim_only:
+        run_simulation()
     else:
-        print("\n[ERROR] No frames captured — check camera setup")
+        # Run sim, then launch v2e in a subprocess before close() exits
+        import subprocess, sys
+        num_frames = run_simulation()
+        if num_frames > 0:
+            print(f"\nLaunching v2e as subprocess on {num_frames} frames...")
+            subprocess.run([sys.executable, __file__, "--v2e-only"])
