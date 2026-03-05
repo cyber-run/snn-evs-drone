@@ -6,9 +6,9 @@ torchvision
 # Event camera simulation (install separately: pip install v2e)
 # v2e -- see https://github.com/SensorsINI/v2e
 
-# RL
-stable-baselines3
-gymnasium
+# Data
+h5py
+scipy
 
 # Utilities
 numpy
