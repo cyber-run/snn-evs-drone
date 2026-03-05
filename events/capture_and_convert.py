@@ -1,0 +1,188 @@
+"""
+Stage 1: Capture RGB frames from Isaac Sim / Pegasus
+Stage 2: Convert frames to synthetic events via v2e
+
+Output:
+  /tmp/sim_frames/   - PNG frames from sim
+  /tmp/sim_events/   - v2e output (events.npz, video previews)
+"""
+
+import time
+import os
+
+FRAME_DIR = "/tmp/sim_frames"
+EVENT_DIR = "/tmp/sim_events"
+NUM_STEPS = 600       # ~10 seconds at 60 fps
+RESOLUTION = (346, 260)  # DAVIS346 — standard neuromorphic camera resolution
+FPS = 60
+
+
+def stage(msg):
+    print(f"\n[{time.strftime('%H:%M:%S')}] >>> {msg}...", flush=True)
+
+
+def done(msg="done"):
+    print(f"[{time.strftime('%H:%M:%S')}]     {msg}", flush=True)
+
+
+# ── Stage 1: Simulation ───────────────────────────────────────────────────────
+
+stage("Starting Isaac Sim")
+from isaacsim import SimulationApp
+simulation_app = SimulationApp({"headless": True})
+done("Isaac Sim started")
+
+stage("Importing modules")
+import omni.timeline
+import numpy as np
+from omni.isaac.core.world import World
+from tqdm import tqdm
+
+from pegasus.simulator.params import ROBOTS, SIMULATION_ENVIRONMENTS
+from pegasus.simulator.logic.graphical_sensors.monocular_camera import MonocularCamera
+from pegasus.simulator.logic.vehicles.multirotor import Multirotor, MultirotorConfig
+from pegasus.simulator.logic.interface.pegasus_interface import PegasusInterface
+from pegasus.simulator.logic.backends.backend import Backend, BackendConfig
+from scipy.spatial.transform import Rotation
+import cv2
+done("Imports complete")
+
+
+class FrameCaptureBackend(Backend):
+    """Backend that captures RGB frames from the onboard camera each step."""
+
+    def __init__(self, frame_dir, max_frames):
+        super().__init__(config=BackendConfig())
+        os.makedirs(frame_dir, exist_ok=True)
+        self.frame_dir = frame_dir
+        self.max_frames = max_frames
+        self.frame_count = 0
+        self.step_count = 0
+
+    def update(self, dt: float):
+        self.step_count += 1
+
+    def update_sensor(self, sensor_type: str, data):
+        pass
+
+    def update_graphical_sensor(self, sensor_type: str, data):
+        if sensor_type != "MonocularCamera" or data is None:
+            return
+        if self.frame_count >= self.max_frames:
+            return
+        try:
+            rgb = data["camera"].get_rgb()
+            if rgb is not None and rgb.size > 0:
+                # Convert RGBA → BGR for OpenCV
+                bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
+                path = os.path.join(self.frame_dir, f"frame_{self.frame_count:06d}.png")
+                cv2.imwrite(path, bgr)
+                self.frame_count += 1
+        except Exception as e:
+            pass  # Camera may not be ready on early steps
+
+    def update_state(self, state):
+        pass
+
+    def input_reference(self):
+        return [0.0, 0.0, 0.0, 0.0]
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+    def reset(self):
+        self.step_count = 0
+        self.frame_count = 0
+
+
+def run_simulation():
+    os.makedirs(FRAME_DIR, exist_ok=True)
+
+    timeline = omni.timeline.get_timeline_interface()
+    pg = PegasusInterface()
+    pg._world = World(**pg._world_settings)
+    world = pg.world
+
+    stage("Loading environment")
+    pg.load_environment(SIMULATION_ENVIRONMENTS["Curved Gridroom"])
+    done()
+
+    stage("Spawning quadrotor with camera")
+    backend = FrameCaptureBackend(FRAME_DIR, max_frames=NUM_STEPS)
+    config = MultirotorConfig()
+    config.backends = [backend]
+    config.graphical_sensors = [MonocularCamera("front_camera", config={
+        "frequency": FPS,
+        "resolution": RESOLUTION,
+        "position": np.array([0.15, 0.0, 0.0]),   # forward-facing, nose mount
+        "orientation": np.array([0.0, 0.0, 180.0]),
+        "depth": False,
+    })]
+
+    Multirotor(
+        "/World/quadrotor",
+        ROBOTS["Iris"],
+        0,
+        [0.0, 0.0, 1.5],   # spawn 1.5m up so we see the room
+        Rotation.from_euler("XYZ", [0.0, 0.0, 0.0], degrees=True).as_quat(),
+        config=config,
+    )
+    done("Quadrotor + camera spawned")
+
+    stage("Resetting world and starting physics")
+    world.reset()
+    timeline.play()
+    done()
+
+    stage(f"Running {NUM_STEPS} steps — capturing frames to {FRAME_DIR}")
+    for _ in tqdm(range(NUM_STEPS), desc="  Simulating", unit="step", ncols=70):
+        world.step(render=True)  # render=True required for camera sensors
+    done(f"Captured {backend.frame_count} frames")
+
+    timeline.stop()
+    simulation_app.close()
+    return backend.frame_count
+
+
+# ── Stage 2: v2e conversion ───────────────────────────────────────────────────
+
+def run_v2e(num_frames):
+    stage(f"Converting {num_frames} frames to events via v2e")
+    os.makedirs(EVENT_DIR, exist_ok=True)
+
+    cmd = (
+        f"v2e "
+        f"--input_dir {FRAME_DIR} "
+        f"--output_folder {EVENT_DIR} "
+        f"--overwrite "
+        f"--timestamp_resolution 0.001 "   # 1ms resolution
+        f"--auto_timestamp_resolution false "
+        f"--dvs_exposure duration 0.005 "  # 5ms exposure window for visualisation
+        f"--input_frame_rate {FPS} "
+        f"--slomo_model SuperSloMo39.ckpt "  # will auto-download on first run
+        f"--no_preview "                     # headless, no GUI
+        f"--dvs346 "                         # DAVIS346 output format (346x260)
+        f"--output_width {RESOLUTION[0]} "
+        f"--output_height {RESOLUTION[1]} "
+        f"--batch_size 4 "
+        f"2>&1"
+    )
+    print(f"\n  Running: {cmd}\n")
+    ret = os.system(cmd)
+    if ret == 0:
+        done(f"Events saved to {EVENT_DIR}")
+    else:
+        print(f"[WARN] v2e exited with code {ret} — check output above")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    num_frames = run_simulation()
+    if num_frames > 0:
+        run_v2e(num_frames)
+    else:
+        print("\n[ERROR] No frames captured — check camera setup")
