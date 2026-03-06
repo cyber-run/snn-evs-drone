@@ -1,5 +1,134 @@
 # Changelog
 
+## [Unreleased] — Session 5
+
+### Feature: closed-loop LGMD-SNN evasion demo
+
+First complete closed-loop validation: trained LGMD-SNN detects a head-on looming obstacle
+and triggers a reactive evasion manoeuvre in Pegasus Simulator.
+
+**Result**: MISS at **0.82 m** closest approach (obstacle radius 0.5 m → 0.32 m clearance).
+Baseline (no evasion): **0.661 m** — drone center inside the obstacle → HIT.
+
+- Evasion triggered at **t = 3.76 s** (0.76 s after obstacle launch), DCMD = 0.28
+- Drone climbed from 1.5 m → **5.80 m** peak; new hover target set to 5.5 m
+- Figures: `results/evasion_burst_v3.png` (DCMD trace + annotation) and
+  `results/evasion_trajectory_v3.png` (altitude + distance comparison)
+
+### Feature: full position+attitude (SO(3)) hover controller
+
+Replaced the altitude-only P+D controller (`BASE_THROTTLE=568`) with a proper cascaded
+position+attitude controller matching the Pegasus nonlinear controller design:
+
+- **Outer loop** (position PID): `F_des = -KP·ep - KD·ev - KI·∫ep` + gravity feedforward.
+  Gains `KP=10, KD=8.5, KI=1.5` on all axes; integral clamped to ±5 m·s to prevent windup.
+- **Inner loop** (SO(3) attitude PD): desired body-z aligned to `F_des`; SO(3) error
+  `e_R = vee(R_des^T R - R^T R_des) / 2`; gains `KR=3.5, KW=0.5`.
+- `force_and_torques_to_velocities(u1, tau)` converts thrust + torques to rotor speeds via
+  Pegasus mixing matrix.
+
+Root cause of the previous drone crash: `update_state()` in Pegasus 5.1 + Isaac Sim 4.5
+is not reliably called as a physics callback. State is now read directly from
+`self.vehicle.state` inside `Backend.update()`.
+
+### Changed — `sim/hover_evasion_capture.py`
+
+- **`HoverController`** class replaces `AltitudePID`: cascaded position PID + SO(3)
+  attitude PD; correctly reads vehicle state; no longer drifts laterally.
+- **Evasion state machine**:
+  - DCMD threshold check gated on `_sim_time > warmup_s` (accumulated via `dt`) instead
+    of `step_count > WARMUP_STEPS` — fixes 2× timing error (physics runs at 2× render rate).
+  - On trigger: set `ctrl.target_pos[2] = 5.5 m`, reset `ctrl._int[2] = 0`, start
+    `_evasion_burst_remain = 72` physics steps (~0.3 s) of full thrust (`THRUST_MAX=60 N`).
+  - During burst: attitude PD still active to stay level; vertical thrust set to `THRUST_MAX`.
+  - After burst: normal position+attitude PID to new altitude target.
+  - Evasion direction change uses `target_pos` (not direct force injection), preventing the
+    KP term from cancelling the evasion force.
+- **`--evasion` / `--weights` / `--dcmd_threshold` flags** for closed-loop demo mode.
+- **Log-diff inline event camera**: consecutive rendered frames converted to ON/OFF spikes
+  via log-luminance difference with configurable threshold. No v2e required at inference time.
+- Trajectory result summary printed at end: evasion time, DCMD value, closest approach,
+  HIT/MISS verdict.
+
+### Added — `scripts/eval_dcmd.py`
+
+Sliding-window DCMD visualisation over a full event recording:
+- Encodes all bins upfront, slides causal `n_bins` window, batches forward passes.
+- Plots: event rate (grey), `dθ/dt` label (blue), DCMD raw + smoothed (red), launch marker.
+- Used by `plot_training.py::plot_evasion_result` for the publication figure.
+
+### Added — `scripts/plot_training.py::plot_evasion_result`
+
+Hero figure function: DCMD trace with evasion trigger annotated, outcome box (MISS/HIT
+closest-approach distance vs baseline), looming region shading.
+
+---
+
+## [Unreleased] — Session 4
+
+### Performance: encoder spatial pre-pooling + pre-encoding
+
+- **`EventEncoder` spatial pre-pooling** (`spatial_downsample` parameter): event coordinates
+  are integer-divided by downsample factor *before* bincount, producing `(T, 2, H//ds, W//ds)`
+  output directly. At `ds=4` this is 16× fewer output elements (65×87 vs 260×346) and ~16×
+  faster encoding. The model receives pre-pooled frames and runs with `pool_factor=1`.
+- **Pre-encoding at init**: `LoomingDataset` now encodes all windows upfront at pooled
+  resolution (~2.3 MB/window, ~5 GB total for 2270 windows). `__getitem__` is a pure tensor
+  lookup — no encoding, no augmentation, no CPU bottleneck.
+
+### Performance: GPU batch augmentation
+
+- **`EventAugmentor`** operates on `(T, B, 2, H, W)` GPU tensors in the training loop, not
+  per-sample in CPU DataLoader workers. Augmentations (horizontal flip, vertical flip,
+  polarity swap, noise injection, event dropout) use per-sample random masks via broadcasting.
+  Eliminates `torch.rand_like` overhead in CPU workers that was consuming 92% CPU.
+- **Result**: epoch time reduced from **118 s → 1.65 s** (71× speedup) through the combined
+  spatial pre-pooling, pre-encoding, and GPU augmentation changes.
+
+### Changed — `snn/training/train_lgmd.py`
+
+- **Updated defaults**: `dt_us=2000` (2 ms bins), `n_bins=50` (100 ms window),
+  `stride_bins=10` (80% overlap), `tau=5.0`, `batch=32`, `epochs=200`.
+- **`--pool` flag** (default 4): controls `EventEncoder.spatial_downsample` and matching
+  model `pool_factor=1`.
+- **`WeightedRandomSampler`**: oversamples looming windows (label > threshold) by
+  `--loom_weight` factor (default 3.0) to counter the ~7–10% looming class imbalance.
+- **`--augment` flag**: enables `EventAugmentor` on GPU (hflip 50%, vflip 30%,
+  polarity swap 20%, noise 0.5%, dropout 5%).
+- Training windows increased from 164 → **~2270** (11×) via finer dt, more bins, stride
+  overlap, and all 5 approach profiles.
+
+### Changed — `snn/models/event_encoder.py`
+
+- Added `spatial_downsample` parameter; `enc_height`, `enc_width`, `_frame_stride` derived
+  from pooled dimensions.
+- `_encode_columns()`: coordinates clipped to pooled grid (`xs // ds`, `ys // ds`) before
+  flat index computation.
+
+### Changed — `snn/models/lgmd_net.py`
+
+- Removed redundant `torch.abs()` on the always-positive `dcmd_weight` buffer.
+
+### Changed — `sim/hover_evasion_capture.py`
+
+- Fixed `globals()["FRAME_DIR"]` hack → direct assignment.
+- Fixed trajectory print off-by-one: subsampling now applied before print statement.
+
+### Data regeneration
+
+- **Root cause of ExCorr regression identified**: checkerboard texture material loading
+  in Isaac Sim triggers a massive event burst (~100K events/bin) at ~1.45 s post-sim-start,
+  regardless of obstacle distance. With 1.5 s warmup this burst occurred 50 ms before launch,
+  creating an anti-correlation between event rate and dθ/dt (Pearson = −0.28 in approach window).
+- Warmup increased to **3.0 s** (was 1.5 s): 1.55 s gap between texture burst and launch.
+- Launch distance increased to **15 m** (was 6 m): texture subtends <1 px at start,
+  minimising the burst magnitude.
+- Total sim duration extended to **12 s** (was 10 s) to preserve approach + post recording.
+- All 5 profiles regenerated with updated config.
+- Batch script `sim/run_all_profiles.sh` runs all profiles (sim + v2e) sequentially.
+
+---
+
 ## [Unreleased] — Session 3
 
 ### Root cause: simulation data quality
@@ -31,9 +160,9 @@ flawed in three ways, preventing any positive Pearson correlation from being lea
 - **Approach speed**: 5 m/s → **8–10 m/s** across all profiles; launch distance reduced
   from 8 m → 6 m. Obstacle reaches the drone within ~0.6 s of launch, producing a sharp,
   rapid event burst the LGMD can lock on to.
-- **Warmup**: `2.0 s → 1.5 s` (initially reduced to 0.5 s, then raised to 1.5 s to push
-  the checkerboard texture-activation spike safely into early warmup). Data generated
-  during this session used the 0.5 s warmup; regeneration with 1.5 s pending.
+- **Warmup**: `2.0 s → 1.5 s` (initially reduced to 0.5 s, then raised to 1.5 s).
+  Later raised to **3.0 s** in Session 4 after diagnosing the texture-activation
+  event burst as a fixed-time renderer artifact (~1.45 s post-sim-start).
 - **`launch_step` metadata**: `np.int32(WARMUP_STEPS)` now saved to `meta.npz`/`events.h5`
   so the training script can compute physically-aligned labels.
 - **Subprocess pass-through**: `--name` flag now forwarded to the v2e subprocess call so
@@ -177,18 +306,15 @@ All 5 profiles regenerated and training completed in ~5 min (300 epochs on L40S 
 The model correctly responds more strongly to the looming phase than background
 across all five held-in and the held-out (diagonal) approach profile.
 
-## Known Issues / Next Session
+## Known Issues / Next Steps
 
-- **Trajectory double-sampling**: The training script now auto-detects and corrects this
-  (1922 raw physics points → correct dt=1/240s). The sim script will be updated to
-  subsample to render rate before saving in the next regeneration run.
-- **Pre-launch texture spike (head_on, t≈0.4s)**: Checkerboard texture activates visually
-  ~0.1s before the warmup ends, causing 416K-event background spike. Increasing warmup to
-  1.5s (already done in sim script, takes effect on next regeneration) will push this spike
-  safely into early warmup frames.
-- `head_on` profile shows weaker correlation (ExCorr=0.074) than other profiles — likely
-  due to the texture activation spike and the head-on approach producing a more symmetric
-  (hence harder to separate) event pattern.
-- No closed-loop evasion controller yet — LGMD output not wired to rotor commands.
+- Evasion is altitude-only (climb to 5.5 m); lateral evasion direction from DCMD spatial
+  activity not yet implemented (left/right split on spike map).
+- Single-trial demo — no systematic evaluation across profiles, speeds, or thresholds.
+  Next: `scripts/eval_avoidance.py` for N-episode statistics and baseline comparisons.
 - Only window-level Pearson loss trained; per-timestep Pearson (used in evaluation) differs
-  slightly in scale, explaining the gap between training-log ExCorr (0.717) and eval ExCorr (0.277).
+  slightly in scale.
+- Sim-to-real gap for event cameras (~50% perf drop reported in literature) — needs early
+  characterisation with real Lucid Vision EVS hardware at Imperial.
+- Phase 2 (Isaac Lab parallel env): N=256 drones with TiledCamera inline event camera
+  for rigorous evaluation and RL training — see `neuromorphic-drone-plan.md`.

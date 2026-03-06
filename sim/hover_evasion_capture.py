@@ -112,39 +112,109 @@ class MonocularCameraIsaacSim45(MonocularCamera):
 
 # ── Altitude PID ──────────────────────────────────────────────────────────────
 
-class AltitudePID:
+class HoverController:
     """
-    Simple P controller for altitude hold.
-    Converts altitude error to symmetric rotor speed offset.
+    Full position + attitude controller for hover.
 
-    Iris hover is approximately 568 rad/s per rotor.
-    A positive error (drone below target) increases all rotor speeds equally.
+    Uses Pegasus's vehicle.force_and_torques_to_velocities() mixer, which
+    converts a desired total thrust (N) + torques (Nm) to per-rotor rad/s.
+    This avoids manual motor mixing and handles any Iris rotor layout.
+
+    Controller structure (same as Pegasus nonlinear_controller.py):
+      - Outer loop:  position/velocity PID → desired total thrust u1
+      - Inner loop:  SO(3) attitude PD    → desired torques tau
     """
 
-    BASE_THROTTLE = 568.0
-    KP = 80.0    # rad/s per metre of altitude error
-    KD = 40.0    # rad/s per (m/s) of vertical velocity error
-    CLAMP = (400.0, 700.0)
+    # Iris physical parameters (Pegasus default)
+    MASS = 1.50     # kg
+    G    = 9.81     # m/s²
 
-    def __init__(self, target_z: float):
-        self.target_z = target_z
-        self._prev_z = None
-        self._prev_t = None
+    # Outer-loop gains (position PID in z only; x/y held by attitude loop)
+    KP_POS = np.array([10.0, 10.0, 10.0])
+    KD_POS = np.array([ 8.5,  8.5,  8.5])
+    KI_POS = np.array([ 1.5,  1.5,  1.5])
 
-    def compute(self, pos: np.ndarray, dt: float) -> list:
-        error_z = self.target_z - pos[2]
+    # Inner-loop gains (attitude PD on SO3 error)
+    KR     = np.array([3.5, 3.5, 3.5])
+    KW     = np.array([0.5, 0.5, 0.5])
 
-        # Derivative: estimated from position change
-        if self._prev_z is not None and dt > 0:
-            vel_z = (pos[2] - self._prev_z) / dt
+    # Clamp total thrust to sane range (N)
+    THRUST_MIN = 0.0
+    THRUST_MAX = 60.0   # ~4× Iris hover thrust
+
+    def __init__(self, target_pos: np.ndarray):
+        from scipy.spatial.transform import Rotation as _R
+        self._Rotation = _R
+        self.target_pos = np.array(target_pos, dtype=float)
+        self._int       = np.zeros(3)
+
+        # State (updated by update_state callback)
+        self.pos = np.zeros(3)
+        self.vel = np.zeros(3)
+        self.R   = _R.identity()
+        self.w   = np.zeros(3)
+
+    def update_state(self, state):
+        """Called by HoverEvasionBackend.update_state()."""
+        self.pos = np.array(state.position,        dtype=float)
+        self.vel = np.array(state.linear_velocity, dtype=float)
+        self.w   = np.array(state.angular_velocity, dtype=float)
+        self.R   = self._Rotation.from_quat(state.attitude)
+
+    def compute(self, dt: float, evasion_force: float = 0.0):
+        """
+        Return (u1, tau) for vehicle.force_and_torques_to_velocities().
+          u1           – desired total thrust [N]
+          tau (3,)     – desired torques [roll, pitch, yaw] [Nm]
+          evasion_force – extra upward thrust [N] during evasion
+        """
+        # ── Outer loop: position PID ──────────────────────────────────────────
+        ep = self.pos - self.target_pos          # position error (want to zero)
+        ev = self.vel                             # velocity error (target vel=0)
+
+        if dt > 0:
+            self._int += ep * dt
+        self._int = np.clip(self._int, -5.0, 5.0)
+
+        F_des = (- self.KP_POS * ep
+                 - self.KD_POS * ev
+                 - self.KI_POS * self._int
+                 + np.array([0.0, 0.0, self.MASS * self.G]))
+        F_des[2] += evasion_force
+
+        # ── Desired thrust = projection onto current body Z ───────────────────
+        Z_B = self.R.as_matrix()[:, 2]
+        u1  = float(np.dot(F_des, Z_B))
+        u1  = float(np.clip(u1, self.THRUST_MIN, self.THRUST_MAX))
+
+        # ── Inner loop: SO(3) attitude control ───────────────────────────────
+        # Desired attitude: align Z_B with F_des, yaw = 0
+        F_norm = np.linalg.norm(F_des)
+        if F_norm < 1e-3:
+            Z_b_des = np.array([0.0, 0.0, 1.0])
         else:
-            vel_z = 0.0
-        self._prev_z = pos[2]
+            Z_b_des = F_des / F_norm
 
-        delta = self.KP * error_z - self.KD * vel_z
-        cmd = self.BASE_THROTTLE + delta
-        cmd = float(np.clip(cmd, *self.CLAMP))
-        return [cmd, cmd, cmd, cmd]
+        X_c_des = np.array([1.0, 0.0, 0.0])       # desired heading (yaw=0)
+        Z_cross  = np.cross(Z_b_des, X_c_des)
+        Z_cross_n = np.linalg.norm(Z_cross)
+        if Z_cross_n < 1e-3:
+            Y_b_des = np.array([0.0, 1.0, 0.0])
+        else:
+            Y_b_des = Z_cross / Z_cross_n
+        X_b_des = np.cross(Y_b_des, Z_b_des)
+
+        R_des = np.column_stack([X_b_des, Y_b_des, Z_b_des])
+        R_cur = self.R.as_matrix()
+
+        # Rotation error (Mellinger/Lee vee-map)
+        eR_mat = 0.5 * (R_des.T @ R_cur - R_cur.T @ R_des)
+        e_R    = np.array([eR_mat[2, 1], eR_mat[0, 2], eR_mat[1, 0]])
+        e_w    = self.w                              # desired angular velocity = 0
+
+        tau = - self.KR * e_R - self.KW * e_w
+
+        return u1, tau
 
 
 # ── Backend ───────────────────────────────────────────────────────────────────
@@ -152,14 +222,16 @@ class AltitudePID:
 class HoverEvasionBackend(Backend):
     """
     Backend that:
-      - Holds altitude with a PID controller
+      - Holds position with a full position+attitude controller
       - Captures RGB frames every sim step
       - Records obstacle and drone positions every step
       - (optional) runs live SNN evasion via log-diff event camera
     """
 
-    # Evasion: climb throttle offset applied on all rotors when DCMD fires
-    EVASION_THRUST = 120.0   # rad/s added to all rotors → ~0.5 m/s² climb
+    # Evasion: max-thrust burst on trigger, then PID to new altitude
+    # At ~240Hz physics, 72 steps ≈ 0.3s. With 41N max thrust and 1.5kg:
+    # net upward accel ≈ (41-14.7)/1.5 = 17.5 m/s² → ~0.79m climb in 0.3s
+    EVASION_BURST_STEPS = 72   # physics steps of max-thrust burst
 
     def __init__(self, frame_dir: str, max_frames: int, target_z: float,
                  evasion_model=None, n_bins: int = 20,
@@ -170,8 +242,8 @@ class HoverEvasionBackend(Backend):
         self.frame_dir = frame_dir
         self.max_frames = max_frames
 
-        self.pid = AltitudePID(target_z)
-        self._rotor_cmd = [AltitudePID.BASE_THROTTLE] * 4
+        self.ctrl = HoverController(target_pos=np.array(DRONE_SPAWN))
+        self._rotor_cmd = [0.0] * 4
 
         self.frame_count = 0
         self.step_count = 0
@@ -191,15 +263,33 @@ class HoverEvasionBackend(Backend):
         self._prev_log_lum    = None   # (H, W) float32
         self._event_buffer    = []     # rolling list of (2, Hp, Wp) tensors
         self._dcmd_history    = []     # (step, dcmd_value) log
-        self._evading         = False
-        self._evasion_step    = None
-        self._closest_dist    = float("inf")
+        self._evading              = False
+        self._evasion_step         = None
+        self._evasion_time         = None
+        self._evasion_dcmd         = None
+        self._evasion_burst_remain = 0   # physics steps left in max-thrust burst
+        self._closest_dist         = float("inf")
+        self._sim_time             = 0.0
+
+    def update_state(self, state):
+        pass  # Not called reliably in Isaac Sim 4.5 — state read directly in update()
 
     # Called every physics step
     def update(self, dt: float):
         self.step_count += 1
+        self._sim_time += dt
+
+        # Read state directly from vehicle (reliable in Isaac Sim 4.5)
         state = self.vehicle.state
-        pos = np.array(state.position)
+        pos = np.array(state.position, dtype=float)
+        self.ctrl.pos = pos
+        self.ctrl.vel = np.array(state.linear_velocity, dtype=float)
+        self.ctrl.w   = np.array(state.angular_velocity, dtype=float)
+        try:
+            from scipy.spatial.transform import Rotation as _R
+            self.ctrl.R = _R.from_quat(state.attitude)
+        except Exception:
+            pass
 
         # Record drone position
         self.drone_positions.append(pos.copy())
@@ -217,31 +307,41 @@ class HoverEvasionBackend(Backend):
         else:
             self.obstacle_positions.append(np.zeros(3))
 
-        # ── Run SNN evasion check (post-warmup only) ─────────────────────────
+        # ── Run SNN evasion check (post-warmup only, keyed on elapsed time) ──
+        warmup_s = WARMUP_STEPS * SIM_DT           # 3.0 s
         if (self._evasion_model is not None
-                and self.step_count > WARMUP_STEPS
+                and self._sim_time > warmup_s
                 and len(self._event_buffer) == self._n_bins):
             import torch
             with torch.no_grad():
                 x = torch.stack(self._event_buffer).unsqueeze(1)  # (T, 1, 2, Hp, Wp)
                 dcmd, _, _ = self._evasion_model(x)
                 imminence = float(dcmd[-1, 0])
-            self._dcmd_history.append((self.step_count, imminence))
+            self._dcmd_history.append((self._sim_time, imminence))
 
             if imminence > self._dcmd_threshold and not self._evading:
-                self._evading = True
-                self._evasion_step = self.step_count
-                t_s = self.step_count * SIM_DT
-                tqdm.write(f"  [t={t_s:.2f}s step={self.step_count}] "
-                           f"EVASION triggered! DCMD={imminence:.4f}")
+                self._evading              = True
+                self._evasion_step         = self.step_count
+                self._evasion_time         = self._sim_time
+                self._evasion_dcmd         = imminence
+                self._evasion_burst_remain = self.EVASION_BURST_STEPS
+                # Set new hover target above the obstacle path (PID takes over after burst)
+                self.ctrl.target_pos[2] = DRONE_SPAWN[2] + 4.0
+                self.ctrl._int[2] = 0.0   # reset altitude integral for clean transition
+                tqdm.write(f"  [t={self._sim_time:.2f}s] "
+                           f"EVASION triggered! DCMD={imminence:.4f} → max-thrust burst + target z={self.ctrl.target_pos[2]:.1f}m")
 
-        # Update PID and optionally add evasion thrust
-        self._rotor_cmd = self.pid.compute(pos, dt)
-        if self._evading:
-            self._rotor_cmd = [
-                min(c + self.EVASION_THRUST, AltitudePID.CLAMP[1])
-                for c in self._rotor_cmd
-            ]
+        # Compute desired thrust + torques, convert to rotor speeds
+        if self._evasion_burst_remain > 0:
+            # Reflex burst: directly command all rotors to max speed
+            self._evasion_burst_remain -= 1
+            max_speed = 1100.0   # Iris max rotor velocity (rad/s)
+            self._rotor_cmd = [max_speed, max_speed, max_speed, max_speed]
+        else:
+            u1, tau = self.ctrl.compute(dt)          # normal position+attitude PID
+            if self.vehicle is not None:
+                self._rotor_cmd = self.vehicle.force_and_torques_to_velocities(u1, tau)
+
 
     def update_sensor(self, sensor_type: str, data):
         pass
@@ -308,9 +408,12 @@ class HoverEvasionBackend(Backend):
     def reset(self):
         self.step_count = 0
         self.frame_count = 0
+        self._sim_time  = 0.0
         self.drone_positions.clear()
         self.obstacle_positions.clear()
-        self._rotor_cmd = [AltitudePID.BASE_THROTTLE] * 4
+        self._rotor_cmd              = [0.0] * 4
+        self._evasion_burst_remain   = 0
+        self.ctrl._int               = np.zeros(3)
 
 
 # ── Simulation ────────────────────────────────────────────────────────────────
@@ -475,14 +578,10 @@ def run_simulation(args):
     # ── Evasion summary ───────────────────────────────────────────────────────
     if backend._evasion_model is not None:
         if backend._evading:
-            t_evade = backend._evasion_step * SIM_DT
-            dcmd_at_evade = next(
-                (v for s, v in backend._dcmd_history if s == backend._evasion_step), 0.0
-            )
             result = ("MISS" if backend._closest_dist > 0.6 else "HIT")
             tqdm.write(f"\n  === EVASION RESULT: {result} ===")
-            tqdm.write(f"  Evasion triggered at t={t_evade:.2f}s  "
-                       f"DCMD={dcmd_at_evade:.4f}")
+            tqdm.write(f"  Evasion triggered at t={backend._evasion_time:.2f}s  "
+                       f"DCMD={backend._evasion_dcmd:.4f}")
             tqdm.write(f"  Closest approach: {backend._closest_dist:.2f}m")
         else:
             tqdm.write(f"\n  === NO EVASION triggered (DCMD never exceeded {backend._dcmd_threshold:.2f}) ===")
@@ -521,9 +620,84 @@ def run_simulation(args):
     tqdm.write(f"  Drone hover z: {stable_pos[2]:.3f}m  "
                f"(target {DRONE_SPAWN[2]}m)")
 
+    # Print a few trajectory samples for debugging
+    check_steps = [0, WARMUP_STEPS//4, WARMUP_STEPS//2, WARMUP_STEPS - 1, WARMUP_STEPS]
+    for s in check_steps:
+        if s < len(drone_pos_arr):
+            dp = drone_pos_arr[s]
+            op = obs_pos_arr[s] if s < len(obs_pos_arr) else np.zeros(3)
+            tqdm.write(f"  step {s:4d} t={s*SIM_DT:.2f}s  "
+                       f"drone=({dp[0]:.2f},{dp[1]:.2f},{dp[2]:.2f})  "
+                       f"obs=({op[0]:.1f},{op[1]:.1f},{op[2]:.1f})")
+
     timeline.stop()
+
+    # ── Optional video export ─────────────────────────────────────────────────
+    if getattr(args, "video", False) and backend.frame_count > 0:
+        annotation = args.profile or run_name
+        if backend._evasion_model is not None:
+            if backend._evading:
+                verdict = "MISS" if backend._closest_dist > 0.6 else "HIT"
+                annotation += f" | SNN evasion | {verdict} {backend._closest_dist:.2f}m"
+            else:
+                annotation += f" | SNN evasion | no trigger"
+        else:
+            annotation += f" | baseline | closest {backend._closest_dist:.2f}m"
+        video_path = f"/tmp/evasion_{run_name}_video.mp4"
+        make_video(FRAME_DIR, video_path, annotation=annotation)
+
     simulation_app.close()
     return backend.frame_count
+
+
+# ── Video export ──────────────────────────────────────────────────────────────
+
+def make_video(frame_dir: str, out_path: str,
+               in_fps: int = FPS, out_fps: int = 30,
+               annotation: str = "") -> bool:
+    """
+    Stitch BMP frames to MP4 via ffmpeg.
+
+    Args:
+        frame_dir:   directory containing frame_XXXXXX.bmp files
+        out_path:    output .mp4 path
+        in_fps:      input (simulation) framerate
+        out_fps:     output video framerate (30 gives smooth playback)
+        annotation:  text overlay in top-left corner (profile, result, etc.)
+    """
+    import subprocess
+
+    frames = sorted(f for f in os.listdir(frame_dir) if f.endswith(".bmp"))
+    if not frames:
+        print(f"[WARN] No frames found in {frame_dir} — skipping video")
+        return False
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    vf_parts = [f"fps={out_fps}"]
+    if annotation:
+        safe = annotation.replace("'", "\\'").replace(":", "\\:")
+        vf_parts.append(
+            f"drawtext=text='{safe}':fontsize=16:fontcolor=white"
+            f":x=10:y=10:box=1:boxcolor=black@0.6:boxborderw=4"
+        )
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-framerate", str(in_fps),
+        "-i", os.path.join(frame_dir, "frame_%06d.bmp"),
+        "-vf", ",".join(vf_parts),
+        "-c:v", "libx264", "-crf", "22", "-preset", "fast",
+        "-pix_fmt", "yuv420p",
+        out_path,
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[WARN] ffmpeg failed:\n{result.stderr[-500:]}")
+        return False
+    size_mb = os.path.getsize(out_path) / 1e6
+    print(f"Video saved → {out_path}  ({size_mb:.1f} MB)")
+    return True
 
 
 # ── Stage 2: v2e conversion ───────────────────────────────────────────────────
@@ -624,6 +798,8 @@ if __name__ == "__main__":
                         help="Path to trained LGMDNet weights (.pt)")
     parser.add_argument("--dcmd_threshold", type=float, default=0.3,
                         help="DCMD threshold to trigger evasion (default 0.3)")
+    parser.add_argument("--video", action="store_true",
+                        help="Export MP4 video from captured frames after simulation")
 
     args = parser.parse_args()
 

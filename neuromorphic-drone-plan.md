@@ -46,12 +46,12 @@ The core SNN architecture is modelled on the **Locust LGMD (Lobula Giant Movemen
 
 ## Simulation Scenario
 
-1. Iris quadrotor hovers at fixed point with PID controller
+1. Iris quadrotor hovers at fixed point (cascaded position PID + SO(3) attitude PD)
 2. `DynamicCuboid` obstacles launched at drone from various angles/speeds
-3. Event camera (DAVIS346, 346×260) captures expanding silhouette
-4. v2e converts frames to synthetic events (SuperSloMo 17× upsampling, 980µs resolution)
+3. Log-diff inline event camera: log-luminance diff between rendered frames → ON/OFF spikes
+4. v2e converts captured frames to synthetic events for training data (SuperSloMo ~9× upsampling)
 5. LGMD SNN processes event stream → DCMD collision-imminence output
-6. Evasion controller: DCMD spike rate > threshold → lateral thrust override
+6. Evasion controller: DCMD > threshold → climb to new altitude + 0.3 s max-thrust burst
 
 ---
 
@@ -83,40 +83,41 @@ The core SNN architecture is modelled on the **Locust LGMD (Lobula Giant Movemen
 
 ---
 
-### Phase 2 — Dynamic Obstacle Scene + LGMD Training (Weeks 4–8) ← current
+### Phase 2 — Dynamic Obstacle Scene + LGMD Training (Weeks 4–8) ✓ Core complete
 
-**Week 4 — Data quality diagnosis + simulation fixes** ← in progress
+**Week 4 — Data quality diagnosis + simulation fixes** ✓
 - [x] Diagnose root cause of training failure: textureless obstacle + dynamic environment artifacts + label misalignment
   - "Curved Gridroom" produced up to 581 K spurious events/bin from animated lighting while obstacle was stationary
   - Solid-colour obstacle generated only ~84 events/bin looming signal (< background noise at 91 events/bin)
   - `make_label_from_trajectory` used uniform fraction resampling instead of physical time axis
-- [x] Fix simulation: Black Gridroom + checkerboard texture + 1.0 m obstacle + 8–10 m/s approach + 0.5 s warmup
+- [x] Fix simulation: Black Gridroom + checkerboard texture + 1.0 m obstacle + 8–10 m/s approach + 3.0 s warmup
 - [x] Fix label alignment: `dθ/dt` mapped via physical time axis (µs timestamps ↔ sim step × sim_dt)
 - [x] SNN model fixes: LIF v_threshold 0.5, `dcmd_weight` fixed buffer, `net_exc` auxiliary signal
 - [x] Training improvements: recording-level val split, combined Pearson loss, per-epoch validation metrics
-- [x] **Regenerate all 5 profiles** with updated `hover_evasion_capture.py` (Black Gridroom + checkerboard + 1.0m + 8-10m/s + 0.5s warmup)
+- [x] **Regenerate all 5 profiles** with updated `hover_evasion_capture.py` (Black Gridroom + checkerboard + 1.0m + 8-10m/s + 3.0s warmup)
 - [x] Retrain 300 epochs: val ExCorr=+0.271, val DcCorr=+0.293, Ex_loom/bg=23.3× on held-out diagonal
-  - Massive improvement from stuck −0.105 with old data; model now generalises to unseen approach angle
-  - Best training ExCorr=0.717 @ epoch 105
-- [ ] Regenerate with 1.5s warmup (already in script) to eliminate pre-launch texture spike artifact
-- [ ] Target val_corr > 0.5 after warmup fix + longer training
 
-**Week 5 — LGMD SNN training refinement**
-- [ ] Supervised training on full 5-profile dataset
+**Week 5 — Hover controller + closed-loop evasion** ✓
+- [x] Full position+attitude SO(3) hover controller (outer position PID + inner SO(3) PD)
+  - Root cause fixed: `update_state()` not called in Pegasus 5.1/Isaac Sim 4.5 — state read directly in `update()`
+  - Drone now holds altitude stably without drift or lateral wobble
+- [x] Closed-loop evasion wired: inline log-diff event camera → LGMD-SNN → DCMD threshold → climb
+  - First demo: MISS at 0.82 m vs baseline HIT at 0.661 m (head_on profile, threshold 0.25)
+  - Evasion triggered at t=3.76 s (0.76 s after launch), drone climbed 1.5 m → 5.8 m
+- [x] `scripts/eval_dcmd.py`: sliding-window DCMD visualisation over full recording
+- [x] Publication figures: DCMD trace with evasion annotation + trajectory comparison
+
+**Remaining — LGMD training refinement**
 - [ ] Frame-based CNN baseline on same task (efficiency comparison for paper)
 - [ ] Ablation: effect of lateral inhibition delay, pooling factor, time bin size
 
-**Weeks 6–7 — Evasion controller**
-- [ ] DCMD output → lateral thrust/pitch/roll override
-- [ ] Closed-loop sim: hover → detect → evade → re-hover
-- [ ] Curriculum: slow obstacles → fast, single → multiple
-
-**Week 8 — Evaluation**
+**Remaining — Evaluation**
+- [ ] `scripts/eval_avoidance.py`: N-episode statistics, 4 baselines (none/random/oracle/LGMD)
+- [ ] Lateral evasion direction (left/right from DCMD spatial activity, not just altitude)
 - Metrics: evasion success rate, reaction latency, spike sparsity
 - SNN vs CNN baseline: accuracy, power, latency
-- Ablation: effect of lateral inhibition, temporal coding, accumulation window
 
-**Milestone:** Closed-loop evasion in simulation with quantified metrics.
+**Milestone:** Closed-loop evasion in simulation with quantified metrics. ← in progress
 
 ---
 

@@ -275,6 +275,77 @@ def plot_dcmd_response(h5_path: str, weights_path: str, out_path: str,
     print(f"DCMD response saved → {out_path}")
 
 
+# ── Figure 4: Evasion result annotated DCMD ───────────────────────────────────
+
+def plot_evasion_result(h5_path: str, weights_path: str, out_path: str,
+                        evasion_t: float, evasion_dcmd: float,
+                        closest_miss: float, closest_hit: float,
+                        dt_us: float = 10_000.0, n_bins: int = 20,
+                        pool: int = 4, dcmd_threshold: float = 0.25) -> None:
+    """
+    Hero figure: DCMD trace with evasion trigger annotated.
+    Shows the closed-loop result — when the SNN fires and what happens.
+    """
+    import torch
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.eval_dcmd import eval_recording
+
+    result = eval_recording(h5_path, weights_path,
+                            dt_us=dt_us, n_bins=n_bins, pool=pool,
+                            smooth_window=5)
+
+    t   = result["t_s"]
+    lbl = result["label"]
+    dcs = result["dcmd_smooth"]
+    lt  = result["launch_t_s"]
+
+    # Crop to looming window
+    if lt is not None:
+        mask = (t >= lt - 0.5) & (t <= lt + 3.0)
+        t, lbl, dcs = t[mask], lbl[mask], dcs[mask]
+
+    _setup_style()
+    fig, ax = plt.subplots(figsize=(8, 3.5))
+
+    ax.plot(t, lbl, color="#2196F3", linewidth=2.0, label="dθ/dt (ground truth)", zorder=3)
+    ax.plot(t, dcs, color="#F44336", linewidth=2.2, label="DCMD output", zorder=4)
+    ax.axhline(dcmd_threshold, color="#F44336", linewidth=1.0, linestyle=":",
+               alpha=0.7, label=f"Threshold ({dcmd_threshold})")
+
+    if lt is not None:
+        ax.axvline(lt, color="black", linewidth=1.2, linestyle="--",
+                   alpha=0.5, label=f"Obstacle launch")
+
+    # Evasion trigger annotation
+    ax.axvline(evasion_t, color="#FF6F00", linewidth=2.0, linestyle="-",
+               label=f"Evasion triggered (t={evasion_t:.2f}s)", zorder=5)
+    ax.annotate(f"SNN fires\nDCMD={evasion_dcmd:.2f}",
+                xy=(evasion_t, dcmd_threshold),
+                xytext=(evasion_t + 0.15, dcmd_threshold + 0.15),
+                fontsize=9, color="#FF6F00", fontweight="bold",
+                arrowprops=dict(arrowstyle="->", color="#FF6F00", lw=1.5))
+
+    # Outcome annotation
+    ax.text(0.98, 0.95,
+            f"MISS  —  closest approach {closest_miss:.2f}m\n"
+            f"(no evasion: {closest_hit:.2f}m)",
+            transform=ax.transAxes, ha="right", va="top",
+            fontsize=9, color="#2E7D32",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="#E8F5E9",
+                      edgecolor="#4CAF50", linewidth=1.2))
+
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Normalised amplitude")
+    ax.set_ylim(-0.05, 1.1)
+    ax.set_title("LGMD-SNN Reactive Evasion — head-on looming stimulus", fontsize=11)
+    ax.legend(loc="upper left", fontsize=8.5, ncol=2)
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path)
+    plt.close(fig)
+    print(f"Evasion result figure saved → {out_path}")
+
+
 # ── Figure 3: Loom vs Background bar chart ────────────────────────────────────
 
 def plot_discrimination_bar(metrics: dict, out_path: str) -> None:
