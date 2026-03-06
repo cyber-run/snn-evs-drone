@@ -33,9 +33,10 @@ import argparse
 # Overridden at runtime by --name argument to support multiple profiles.
 
 _BASE = "/tmp/evasion"
-FRAME_DIR  = f"{_BASE}_frames"
-META_DIR   = f"{_BASE}_meta"   # separate from frames so v2e ignores it
-EVENT_DIR  = f"{_BASE}_events"
+FRAME_DIR     = f"{_BASE}_frames"
+META_DIR      = f"{_BASE}_meta"      # separate from frames so v2e ignores it
+EVENT_DIR     = f"{_BASE}_events"
+EXT_FRAME_DIR = f"{_BASE}_extframes" # third-person camera frames
 RESOLUTION = (346, 260)   # DAVIS346
 FPS        = 120          # camera + renderer Hz (physics runs at 250 Hz internally)
                           # 60→17× SloMo, 120→9× SloMo, 240→4× SloMo
@@ -547,8 +548,30 @@ def run_simulation(args):
     )
     done("Quadrotor + camera spawned")
 
+    # ── External (third-person) camera ────────────────────────────────────────
+    ext_cam = None
+    if getattr(args, "ext_camera", False):
+        try:
+            from omni.isaac.sensor import Camera as _IsaacCamera
+            os.makedirs(EXT_FRAME_DIR, exist_ok=True)
+            ext_cam = _IsaacCamera(
+                prim_path="/World/ExtCamera",
+                position=EXT_CAM_POS,
+                orientation=_look_at_quat(EXT_CAM_POS, EXT_CAM_TARGET),
+                resolution=EXT_RESOLUTION,
+                frequency=FPS,
+            )
+            ext_cam.initialize()
+            tqdm.write(f"  External camera at {EXT_CAM_POS.tolist()} "
+                       f"→ {EXT_FRAME_DIR}")
+        except Exception as _e:
+            tqdm.write(f"  [warn] External camera init failed: {_e}")
+            ext_cam = None
+
     stage("Resetting world and starting physics")
     world.reset()
+    if ext_cam is not None:
+        ext_cam.post_reset()
     timeline.play()
     done()
 
@@ -570,6 +593,17 @@ def run_simulation(args):
                 tqdm.write(f"  [warn] could not set obstacle velocity: {e}")
 
         world.step(render=True)
+
+        # External camera capture
+        if ext_cam is not None:
+            try:
+                rgba = ext_cam.get_rgba()
+                if rgba is not None and rgba.size > 0:
+                    bgr = cv2.cvtColor(rgba[..., :3], cv2.COLOR_RGB2BGR)
+                    cv2.imwrite(
+                        os.path.join(EXT_FRAME_DIR, f"frame_{step:06d}.bmp"), bgr)
+            except Exception:
+                pass
 
     raw_traj_len = len(backend.drone_positions)
     done(f"Captured {backend.frame_count} frames  |  "
@@ -633,7 +667,7 @@ def run_simulation(args):
     timeline.stop()
 
     # ── Optional video export ─────────────────────────────────────────────────
-    if getattr(args, "video", False) and backend.frame_count > 0:
+    if getattr(args, "video", False):
         annotation = args.profile or run_name
         if backend._evasion_model is not None:
             if backend._evading:
@@ -643,11 +677,53 @@ def run_simulation(args):
                 annotation += f" | SNN evasion | no trigger"
         else:
             annotation += f" | baseline | closest {backend._closest_dist:.2f}m"
-        video_path = f"/tmp/evasion_{run_name}_video.mp4"
-        make_video(FRAME_DIR, video_path, annotation=annotation)
+
+        # Prefer external (3rd-person) frames if available, fall back to onboard
+        ext_frames = sorted(
+            f for f in os.listdir(EXT_FRAME_DIR) if f.endswith(".bmp")
+        ) if os.path.isdir(EXT_FRAME_DIR) else []
+
+        if ext_frames:
+            video_path = f"/tmp/evasion_{run_name}_ext_video.mp4"
+            make_video(EXT_FRAME_DIR, video_path, annotation=annotation)
+        if backend.frame_count > 0:
+            video_path = f"/tmp/evasion_{run_name}_video.mp4"
+            make_video(FRAME_DIR, video_path, annotation=annotation)
 
     simulation_app.close()
     return backend.frame_count
+
+
+# ── External (third-person) camera ────────────────────────────────────────────
+# Positioned to the side and elevated, looking at the approach corridor so both
+# drone and obstacle are visible in the same frame.
+# Eye: (8, -10, 5)  — side-elevated view of the XZ approach plane
+# Target: (0, 0, 1.5) — drone hover position (approach comes from +X)
+EXT_CAM_POS    = np.array([ 8.0, -10.0, 5.0])
+EXT_CAM_TARGET = np.array([ 0.0,   0.0, 1.5])
+EXT_RESOLUTION = (1280, 720)   # 16:9 HD
+
+
+def _look_at_quat(eye: np.ndarray, target: np.ndarray,
+                  world_up: np.ndarray = np.array([0.0, 0.0, 1.0])) -> np.ndarray:
+    """
+    Quaternion [x, y, z, w] for a camera at `eye` looking at `target`.
+
+    Isaac Sim (USD) cameras look along their local -Z axis with +Y up.
+    We build R such that R * [0,0,-1] = forward and R * [0,1,0] ≈ world_up.
+    """
+    fwd = target - eye
+    fwd = fwd / (np.linalg.norm(fwd) + 1e-9)
+    right = np.cross(fwd, world_up)
+    right_n = np.linalg.norm(right)
+    if right_n < 1e-6:           # degenerate: looking straight up/down
+        right = np.array([1.0, 0.0, 0.0])
+    else:
+        right = right / right_n
+    up = np.cross(right, fwd)   # orthogonal up in camera plane
+    # Rotation matrix: local X=right, local Y=up, local Z=-fwd
+    R = np.column_stack([right, up, -fwd])
+    return Rotation.from_matrix(R).as_quat()   # [x, y, z, w]
 
 
 # ── Video export ──────────────────────────────────────────────────────────────
@@ -800,14 +876,18 @@ if __name__ == "__main__":
                         help="DCMD threshold to trigger evasion (default 0.3)")
     parser.add_argument("--video", action="store_true",
                         help="Export MP4 video from captured frames after simulation")
+    parser.add_argument("--ext_camera", action="store_true",
+                        help="Add a fixed external (third-person) camera showing "
+                             "both drone and obstacle (requires --video)")
 
     args = parser.parse_args()
 
     # Override output dirs based on --name (or auto-derive from --profile)
     run_name = args.name or args.profile or "default"
-    FRAME_DIR = f"/tmp/evasion_{run_name}_frames"
-    META_DIR  = f"/tmp/evasion_{run_name}_meta"
-    EVENT_DIR = f"/tmp/evasion_{run_name}_events"
+    FRAME_DIR     = f"/tmp/evasion_{run_name}_frames"
+    META_DIR      = f"/tmp/evasion_{run_name}_meta"
+    EVENT_DIR     = f"/tmp/evasion_{run_name}_events"
+    EXT_FRAME_DIR = f"/tmp/evasion_{run_name}_extframes"
     print(f"Output dirs: frames={FRAME_DIR}  meta={META_DIR}  events={EVENT_DIR}")
 
     if args.v2e_only:

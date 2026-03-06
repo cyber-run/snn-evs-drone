@@ -145,8 +145,17 @@ def make_side_by_side(left_dir: str, right_dir: str, out_path: str,
 
 def make_comparison(profile: str, baseline_name: str, evasion_name: str,
                     out_path: str, evasion_trigger_step: int | None = None):
-    baseline_frames = f"/tmp/evasion_{baseline_name}_frames"
-    evasion_frames  = f"/tmp/evasion_{evasion_name}_frames"
+    # Prefer external (third-person) frames if available
+    def best_frames(name):
+        ext = f"/tmp/evasion_{name}_extframes"
+        fbo = f"/tmp/evasion_{name}_frames"
+        if os.path.isdir(ext) and any(f.endswith(".bmp") for f in os.listdir(ext)):
+            print(f"  Using external camera frames for '{name}'")
+            return ext
+        return fbo
+
+    baseline_frames = best_frames(baseline_name)
+    evasion_frames  = best_frames(evasion_name)
 
     if not os.path.isdir(baseline_frames):
         print(f"[ERROR] Baseline frames not found: {baseline_frames}")

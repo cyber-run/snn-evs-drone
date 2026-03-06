@@ -54,7 +54,7 @@ for PROFILE in "${PROFILES[@]}"; do
     # ── 1. Baseline run ───────────────────────────────────────────────────────
     echo "  [1/3] Baseline simulation..."
     python sim/hover_evasion_capture.py \
-        --sim-only --profile "$PROFILE" --name "$BASELINE_NAME" --video \
+        --sim-only --profile "$PROFILE" --name "$BASELINE_NAME" --video --ext_camera \
         > "/tmp/sim_${BASELINE_NAME}.log" 2>&1
     if [ $? -ne 0 ]; then
         echo "  [ERROR] Baseline failed — check /tmp/sim_${BASELINE_NAME}.log"
@@ -67,7 +67,8 @@ for PROFILE in "${PROFILES[@]}"; do
     echo "  [2/3] SNN evasion simulation..."
     python sim/hover_evasion_capture.py \
         --sim-only --profile "$PROFILE" --name "$EVASION_NAME" \
-        --evasion --weights "$WEIGHTS" --dcmd_threshold "$THRESHOLD" --video \
+        --evasion --weights "$WEIGHTS" --dcmd_threshold "$THRESHOLD" \
+        --video --ext_camera \
         > "/tmp/sim_${EVASION_NAME}.log" 2>&1
     if [ $? -ne 0 ]; then
         echo "  [ERROR] Evasion failed — check /tmp/sim_${EVASION_NAME}.log"
