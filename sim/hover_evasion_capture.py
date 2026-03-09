@@ -549,29 +549,30 @@ def run_simulation(args):
     done("Quadrotor + camera spawned")
 
     # ── External (third-person) camera ────────────────────────────────────────
-    ext_cam = None
+    # Use the Replicator API (Isaac Sim 4.5 recommended approach for world-space
+    # cameras).  rep.create.camera(look_at=...) handles orientation internally,
+    # avoiding any quaternion-convention issues.
+    ext_rgb_ann = None
     if getattr(args, "ext_camera", False):
         try:
-            from omni.isaac.sensor import Camera as _IsaacCamera
+            import omni.replicator.core as rep
             os.makedirs(EXT_FRAME_DIR, exist_ok=True)
-            ext_cam = _IsaacCamera(
-                prim_path="/World/ExtCamera",
-                position=EXT_CAM_POS,
-                orientation=_look_at_quat(EXT_CAM_POS, EXT_CAM_TARGET),
-                resolution=EXT_RESOLUTION,
-                frequency=FPS,
+            _ext_cam_prim = rep.create.camera(
+                position=EXT_CAM_POS.tolist(),
+                look_at=EXT_CAM_TARGET.tolist(),
             )
-            ext_cam.initialize()
-            tqdm.write(f"  External camera at {EXT_CAM_POS.tolist()} "
+            _ext_rp = rep.create.render_product(
+                _ext_cam_prim, resolution=EXT_RESOLUTION)
+            ext_rgb_ann = rep.AnnotatorRegistry.get_annotator("rgb")
+            ext_rgb_ann.attach([_ext_rp])
+            tqdm.write(f"  External camera (replicator) at {EXT_CAM_POS.tolist()} "
                        f"→ {EXT_FRAME_DIR}")
         except Exception as _e:
-            tqdm.write(f"  [warn] External camera init failed: {_e}")
-            ext_cam = None
+            tqdm.write(f"  [warn] External camera setup failed: {_e}")
+            ext_rgb_ann = None
 
     stage("Resetting world and starting physics")
     world.reset()
-    if ext_cam is not None:
-        ext_cam.post_reset()
     timeline.play()
     done()
 
@@ -595,11 +596,11 @@ def run_simulation(args):
         world.step(render=True)
 
         # External camera capture
-        if ext_cam is not None:
+        if ext_rgb_ann is not None:
             try:
-                rgba = ext_cam.get_rgba()
-                if rgba is not None and rgba.size > 0:
-                    bgr = cv2.cvtColor(rgba[..., :3], cv2.COLOR_RGB2BGR)
+                rgb = ext_rgb_ann.get_data()
+                if rgb is not None and rgb.size > 0:
+                    bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
                     cv2.imwrite(
                         os.path.join(EXT_FRAME_DIR, f"frame_{step:06d}.bmp"), bgr)
             except Exception:
@@ -723,7 +724,8 @@ def _look_at_quat(eye: np.ndarray, target: np.ndarray,
     up = np.cross(right, fwd)   # orthogonal up in camera plane
     # Rotation matrix: local X=right, local Y=up, local Z=-fwd
     R = np.column_stack([right, up, -fwd])
-    return Rotation.from_matrix(R).as_quat()   # [x, y, z, w]
+    q = Rotation.from_matrix(R).as_quat()      # scipy: [x, y, z, w]
+    return np.array([q[3], q[0], q[1], q[2]])  # Isaac Sim: [w, x, y, z]
 
 
 # ── Video export ──────────────────────────────────────────────────────────────

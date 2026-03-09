@@ -1,5 +1,47 @@
 # Changelog
 
+## [Unreleased] — Session 6
+
+### Feature: external (third-person) camera for evasion visualisation
+
+Added a fixed world-space camera that captures both drone and obstacle during evasion runs,
+enabling side-by-side comparison videos showing the full scene rather than just the onboard
+drone-eye view.
+
+- **`--ext_camera` flag** on `hover_evasion_capture.py`: activates a fixed external camera
+  at position `(8, -10, 5)` looking at the drone hover point `(0, 0, 1.5)`, outputting
+  1280×720 frames to `/tmp/evasion_{name}_extframes/`.
+- **Replicator API** (`omni.replicator.core`): uses `rep.create.camera(look_at=...)` +
+  `rep.AnnotatorRegistry.get_annotator("rgb")` for world-space camera capture. Earlier
+  attempts with `omni.isaac.sensor.Camera` and `get_rgba()` produced near-black frames
+  (mean≈2, max≈38) because annotators were invalidated by `world.reset()` and the
+  `get_rgba()` method returned an uninitialised buffer. Replicator handles this correctly.
+- **`_look_at_quat()` helper**: builds a USD-convention rotation matrix (`local X=right,
+  local Y=up, local Z=-forward`) from eye/target positions. Return value corrected to
+  Isaac Sim's scalar-first `[w, x, y, z]` quaternion format (was scipy `[x, y, z, w]`).
+- **`make_comparison_video.py`** already preferred `_extframes` over onboard frames — no
+  changes needed; comparison videos now automatically use the external view.
+- **`run_evasion_profiles.sh`** already passed `--ext_camera --video` — all 5 profiles
+  produce external-camera comparison videos in a single batch run.
+
+### Evaluation: all 5 profiles run with external camera
+
+Full baseline vs SNN-evasion comparison run completed on Brev L40s. Results:
+
+| Profile | Evasion closest approach | Verdict |
+|---------|--------------------------|---------|
+| head_on | 1.21 m | MISS |
+| lateral | 0.96 m | MISS |
+| high | 1.43 m | MISS |
+| low | 3.63 m | N/A (no trigger) |
+| diagonal | 1.42 m | MISS |
+
+4/5 profiles triggered evasion. `low` profile (obstacle from below) did not trigger —
+the upward approach produces insufficient looming signal at the current threshold (0.25).
+Comparison videos saved to `results/videos/comparison_{profile}.mp4`.
+
+---
+
 ## [Unreleased] — Session 5
 
 ### Feature: closed-loop LGMD-SNN evasion demo

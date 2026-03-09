@@ -59,7 +59,9 @@ Key properties of LGMD:
 sim/
   headless_hover_test.py     Physics pipeline validation (drone falls under gravity)
   hover_evasion_capture.py   Hovering drone + dynamic obstacle launched at it → frames + trajectory
+                             --ext_camera adds fixed world-space third-person camera (1280×720)
   run_all_profiles.sh        Batch script: runs all 5 profiles (sim + v2e) sequentially
+  run_evasion_profiles.sh    Batch script: baseline + SNN evasion for all 5 profiles → comparison videos
 
 events/
   capture_and_convert.py     Static obstacle scene (legacy, for pipeline testing)
@@ -73,8 +75,9 @@ snn/
     train_lgmd.py            Training with GPU augmentation, weighted sampling, pre-encoded windows
 
 scripts/
-  eval_dcmd.py             Sliding-window DCMD visualisation over a full H5 recording
-  plot_training.py         Publication figures: training dashboard, DCMD response, evasion result
+  eval_dcmd.py               Sliding-window DCMD visualisation over a full H5 recording
+  plot_training.py           Publication figures: training dashboard, DCMD response, evasion result
+  make_comparison_video.py   Side-by-side baseline vs evasion MP4 (uses ext camera frames if available)
 results/      Experiment outputs (gitignored)
 docs/         Notes, architecture diagrams
 ```
@@ -163,9 +166,15 @@ python snn/training/train_lgmd.py \
 
 # 3. Closed-loop evasion demo (requires trained weights)
 #    Runs sim-only (inline log-diff event camera, no v2e), prints HIT/MISS result
+#    Add --ext_camera for a fixed third-person view; --video to save MP4s
 OMNI_KIT_ACCEPT_EULA=Y ISAACSIM_PATH=... \
   python sim/hover_evasion_capture.py --sim-only --profile head_on --name evasion_demo \
-    --evasion --weights results/lgmd_weights.pt --dcmd_threshold 0.25
+    --evasion --weights results/lgmd_weights.pt --dcmd_threshold 0.25 \
+    --ext_camera --video
+
+# 3b. Full baseline + evasion comparison across all 5 profiles
+#     Outputs results/videos/comparison_{profile}.mp4 (side-by-side, ext camera view)
+OMNI_KIT_ACCEPT_EULA=Y ISAACSIM_PATH=... bash sim/run_evasion_profiles.sh
 
 # 4. DCMD signal visualisation over a full recording
 python scripts/eval_dcmd.py \
