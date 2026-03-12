@@ -724,10 +724,10 @@ def run_simulation(args):
 
         if ext_frames:
             video_path = os.path.join(DATA_DIR, f"evasion_{run_name}_ext_video.mp4")
-            make_video(EXT_FRAME_DIR, video_path, annotation=annotation)
+            make_video(EXT_FRAME_DIR, video_path, in_fps=FPS, annotation=annotation)
         if backend.frame_count > 0:
             video_path = os.path.join(DATA_DIR, f"evasion_{run_name}_video.mp4")
-            make_video(FRAME_DIR, video_path, annotation=annotation)
+            make_video(FRAME_DIR, video_path, in_fps=FPS, annotation=annotation)
 
         # In preview mode, clean up frame dirs — only the MP4 matters
         if getattr(args, "preview", False):
