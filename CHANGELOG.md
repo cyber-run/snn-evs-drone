@@ -40,6 +40,17 @@ Full baseline vs SNN-evasion comparison run completed on Brev L40s. Results:
 the upward approach produces insufficient looming signal at the current threshold (0.25).
 Comparison videos saved to `results/videos/comparison_{profile}.mp4`.
 
+### Infrastructure: migrated to local workstation (nina)
+
+Brev L40s instance restarted, wiping all `/tmp/` training data (BMP frames + events.h5).
+Results and trained weights in `results/` were preserved (already pulled to local).
+
+- **New machine**: `nina` (Ubuntu 24.04, NVIDIA RTX 3080 10 GB, local network)
+- **Setup**: Isaac Sim 4.5 + Pegasus 5.1.0 + v2e installed via `setup.sh` (adapted for Python 3.10 on Ubuntu 24.04)
+- **SuperSloMo checkpoint**: copied from Brev → `~/v2e/input/SuperSloMo39.ckpt`
+- **Data regeneration**: all 5 profiles re-running via `run_all_profiles.sh` on nina (estimated 1–2 hrs vs ~30 min on L40s due to lower GPU throughput)
+- **Lesson**: training data should be saved to a persistent directory (not `/tmp/`) or pushed to object storage between sessions
+
 ---
 
 ## [Unreleased] — Session 5
