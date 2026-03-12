@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Run full sim+v2e pipeline for all 5 approach profiles sequentially.
-# Each profile: Isaac Sim renders frames → v2e converts to events.h5
-# Logs: /tmp/sim_<profile>.log and /tmp/v2e_<profile>.log
+# Run full sim+v2e pipeline for all 11 approach profiles sequentially.
+# Each profile: Isaac Sim renders frames at 1000 FPS → v2e converts to events.h5
+# Logs: data/sim_<profile>.log and data/v2e_<profile>.log
+#
+# Usage:
+#   bash sim/run_all_profiles.sh                  # Black Gridroom for all
+#   bash sim/run_all_profiles.sh --randomize_env  # random environment per profile
 
 set -euo pipefail
 
 REPO="$HOME/snn-evs-drone"
 VENV="$HOME/isaaclab-env/bin/activate"
+DATA_DIR="$REPO/data"
 
 export OMNI_KIT_ACCEPT_EULA=Y
 export ISAACSIM_PATH="$HOME/isaaclab-env/lib/python3.10/site-packages/isaacsim"
@@ -14,21 +19,34 @@ export ISAACSIM_PATH="$HOME/isaaclab-env/lib/python3.10/site-packages/isaacsim"
 source "$VENV"
 
 cd "$REPO"
+mkdir -p "$DATA_DIR"
 
-PROFILES=(head_on lateral high low diagonal)
+# Pass through extra flags (e.g. --randomize_env)
+EXTRA_FLAGS="${*}"
+
+PROFILES=(
+    head_on lateral high low diagonal
+    head_on_slow lateral_slow diagonal_slow
+    head_on_fast lateral_fast diagonal_fast
+)
+
+TOTAL=${#PROFILES[@]}
+CURRENT=0
 
 for PROFILE in "${PROFILES[@]}"; do
+    CURRENT=$((CURRENT + 1))
     echo ""
     echo "========================================="
-    echo "  Profile: $PROFILE  ($(date +'%H:%M:%S'))"
+    echo "  [$CURRENT/$TOTAL] Profile: $PROFILE  ($(date +'%H:%M:%S'))"
     echo "========================================="
 
-    SIM_LOG="/tmp/sim_${PROFILE}.log"
-    V2E_LOG="/tmp/v2e_${PROFILE}.log"
+    SIM_LOG="$DATA_DIR/sim_${PROFILE}.log"
+    V2E_LOG="$DATA_DIR/v2e_${PROFILE}.log"
 
     echo "  [1/2] Simulation → $SIM_LOG"
     python sim/hover_evasion_capture.py \
         --sim-only --profile "$PROFILE" --name "$PROFILE" \
+        $EXTRA_FLAGS \
         > "$SIM_LOG" 2>&1
     SIM_EXIT=$?
     if [ $SIM_EXIT -ne 0 ]; then
@@ -36,7 +54,7 @@ for PROFILE in "${PROFILES[@]}"; do
         tail -20 "$SIM_LOG"
         exit 1
     fi
-    FRAME_COUNT=$(ls /tmp/evasion_${PROFILE}_frames/*.bmp 2>/dev/null | wc -l)
+    FRAME_COUNT=$(ls "$DATA_DIR"/evasion_${PROFILE}_frames/frame_*.jpg "$DATA_DIR"/evasion_${PROFILE}_frames/frame_*.bmp 2>/dev/null | wc -l)
     echo "  [1/2] Done — $FRAME_COUNT frames captured"
 
     echo "  [2/2] v2e → $V2E_LOG"
@@ -50,7 +68,7 @@ for PROFILE in "${PROFILES[@]}"; do
         exit 1
     fi
 
-    H5="/tmp/evasion_${PROFILE}_events/events.h5"
+    H5="$DATA_DIR/evasion_${PROFILE}_events/events.h5"
     if [ -f "$H5" ]; then
         H5_SIZE=$(du -sh "$H5" | cut -f1)
         echo "  [2/2] Done — events.h5 ($H5_SIZE)"
@@ -62,11 +80,11 @@ done
 
 echo ""
 echo "========================================="
-echo "  All 5 profiles complete!  ($(date +'%H:%M:%S'))"
+echo "  All $TOTAL profiles complete!  ($(date +'%H:%M:%S'))"
 echo "========================================="
 echo ""
 echo "H5 files:"
 for PROFILE in "${PROFILES[@]}"; do
-    H5="/tmp/evasion_${PROFILE}_events/events.h5"
+    H5="$DATA_DIR/evasion_${PROFILE}_events/events.h5"
     [ -f "$H5" ] && echo "  $H5  ($(du -sh $H5 | cut -f1))" || echo "  MISSING: $H5"
 done

@@ -29,7 +29,9 @@ OUT_FPS = 30    # output video framerate (4× slowdown relative to sim)
 
 
 def load_meta(name: str) -> dict | None:
-    meta_path = f"/tmp/evasion_{name}_meta/meta.npz"
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    data_dir = os.path.join(repo_root, "data")
+    meta_path = os.path.join(data_dir, f"evasion_{name}_meta", "meta.npz")
     if not os.path.exists(meta_path):
         print(f"[WARN] meta not found: {meta_path}")
         return None
@@ -147,9 +149,13 @@ def make_comparison(profile: str, baseline_name: str, evasion_name: str,
                     out_path: str, evasion_trigger_step: int | None = None):
     # Prefer external (third-person) frames if available
     def best_frames(name):
-        ext = f"/tmp/evasion_{name}_extframes"
-        fbo = f"/tmp/evasion_{name}_frames"
-        if os.path.isdir(ext) and any(f.endswith(".bmp") for f in os.listdir(ext)):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        data_dir = os.path.join(repo_root, "data")
+        ext = os.path.join(data_dir, f"evasion_{name}_extframes")
+        fbo = os.path.join(data_dir, f"evasion_{name}_frames")
+        if os.path.isdir(ext) and any(
+            f.endswith(".bmp") or f.endswith(".jpg") for f in os.listdir(ext)
+        ):
             print(f"  Using external camera frames for '{name}'")
             return ext
         return fbo

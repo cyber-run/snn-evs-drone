@@ -7,8 +7,8 @@
 #   3. Comparison video (side-by-side, via make_comparison_video.py)
 #
 # Results:
-#   /tmp/evasion_{profile}_baseline_video.mp4
-#   /tmp/evasion_{profile}_evasion_video.mp4
+#   data/evasion_{profile}_baseline_video.mp4
+#   data/evasion_{profile}_evasion_video.mp4
 #   results/videos/comparison_{profile}.mp4
 #   results/evasion_results.txt  — summary table
 
@@ -31,7 +31,11 @@ if [ ! -f "$WEIGHTS" ]; then
     exit 1
 fi
 
-PROFILES=(head_on lateral high low diagonal)
+PROFILES=(
+    head_on lateral high low diagonal
+    head_on_slow lateral_slow diagonal_slow
+    head_on_fast lateral_fast diagonal_fast
+)
 RESULTS_FILE="results/evasion_results.txt"
 mkdir -p results/videos
 

@@ -9,6 +9,8 @@ venv/
 *.ckpt
 results/
 events/data/
+data/
 *.mp4
 *.bag
 .DS_Store
+data

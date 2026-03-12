@@ -149,18 +149,18 @@ OMNI_KIT_ACCEPT_EULA=Y ISAACSIM_PATH=... \
   python sim/hover_evasion_capture.py --sim-only --profile head_on --name head_on
 python sim/hover_evasion_capture.py --v2e-only --name head_on
 
-# Output: /tmp/evasion_{name}_events/events.h5 with trajectory metadata embedded
+# Output: data/evasion_{name}_events/events.h5 with trajectory metadata embedded
 
 # 2. Train LGMD SNN on one or more recordings
 #    --val_h5 holds out a full recording for validation
 #    --augment enables GPU-side data augmentation (flip, polarity swap, noise, dropout)
 #    --pool 4 pre-pools events in encoder (16× faster, model uses pool_factor=1)
 python snn/training/train_lgmd.py \
-  --h5 /tmp/evasion_head_on_events/events.h5 \
-      /tmp/evasion_lateral_events/events.h5 \
-      /tmp/evasion_high_events/events.h5 \
-      /tmp/evasion_low_events/events.h5 \
-  --val_h5 /tmp/evasion_diagonal_events/events.h5 \
+  --h5 data/evasion_head_on_events/events.h5 \
+      data/evasion_lateral_events/events.h5 \
+      data/evasion_high_events/events.h5 \
+      data/evasion_low_events/events.h5 \
+  --val_h5 data/evasion_diagonal_events/events.h5 \
   --augment \
   --save results/lgmd_weights.pt
 
@@ -178,12 +178,12 @@ OMNI_KIT_ACCEPT_EULA=Y ISAACSIM_PATH=... bash sim/run_evasion_profiles.sh
 
 # 4. DCMD signal visualisation over a full recording
 python scripts/eval_dcmd.py \
-  --h5 /tmp/evasion_head_on_events/events.h5 \
+  --h5 data/evasion_head_on_events/events.h5 \
   --weights results/lgmd_weights.pt \
   --out results/eval_dcmd_head_on.png
 
 # 5. Visualise event stream
-python events/visualise_events.py --h5 /tmp/evasion_head_on_events/events.h5
+python events/visualise_events.py --h5 data/evasion_head_on_events/events.h5
 
 # 6. Physics validation
 OMNI_KIT_ACCEPT_EULA=Y ISAACSIM_PATH=... python sim/headless_hover_test.py

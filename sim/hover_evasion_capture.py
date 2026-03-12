@@ -32,15 +32,19 @@ import argparse
 # ── Constants ─────────────────────────────────────────────────────────────────
 # Overridden at runtime by --name argument to support multiple profiles.
 
-_BASE = "/tmp/evasion"
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR   = os.path.join(_REPO_ROOT, "data")
+_BASE = os.path.join(DATA_DIR, "evasion")
 FRAME_DIR     = f"{_BASE}_frames"
 META_DIR      = f"{_BASE}_meta"      # separate from frames so v2e ignores it
 EVENT_DIR     = f"{_BASE}_events"
 EXT_FRAME_DIR = f"{_BASE}_extframes" # third-person camera frames
 RESOLUTION = (346, 260)   # DAVIS346
-FPS        = 120          # camera + renderer Hz (physics runs at 250 Hz internally)
-                          # 60→17× SloMo, 120→9× SloMo, 240→4× SloMo
+FPS        = 1000         # camera + renderer Hz — native 1ms resolution, no SuperSloMo needed
+                          # Both physics_dt and rendering_dt set to 1/FPS
 SIM_DT     = 1.0 / FPS   # simulated time per step
+FRAME_FMT  = ".jpg"       # JPEG at 1000fps keeps disk usage manageable (~50MB vs ~3GB BMP)
+FRAME_QUALITY = 90        # JPEG quality (90 is visually lossless for v2e)
 
 DRONE_SPAWN   = [0.0, 0.0, 1.5]   # metres — hover target
 WARMUP_STEPS  = int(3.0 * FPS)    # 3.0 s warmup: physics settle + USD material propagation
@@ -54,15 +58,37 @@ OBSTACLE_HALF_SIZE = 0.5           # metres (1.0 m cube)
 # Approach profiles: (launch_x, launch_y, launch_z, speed_x, speed_y, speed_z)
 # Launch distance 15 m — far enough that the checkerboard texture is sub-pixel
 # at start, so the texture-activation event transient falls well within the
-# warmup period (before any approach events).  Speeds 8-12 m/s give ~1-2 s
-# approach time, producing a strong looming event burst.
+# warmup period (before any approach events).
+# Original profiles: 8-12 m/s (~1-2 s approach)
+# Slow profiles:     4-5 m/s  (~3 s approach)
+# Fast profiles:    15-18 m/s (~0.8 s approach)
 PROFILES = {
-    "head_on":  (15.0,  0.0,  1.5, -12.0,  0.0,  0.0),
-    "lateral":  (15.0,  5.0,  1.5, -10.0, -4.0,  0.0),
-    "high":     (15.0,  0.0,  4.0, -10.0,  0.0, -2.0),
-    "low":      (15.0,  0.0, -1.0, -10.0,  0.0,  2.0),
-    "diagonal": (12.0, 10.0,  1.5,  -8.0, -8.0,  0.0),
+    # ── Original (medium speed) ──
+    "head_on":       (15.0,  0.0,  1.5, -12.0,  0.0,  0.0),
+    "lateral":       (15.0,  5.0,  1.5, -10.0, -4.0,  0.0),
+    "high":          (15.0,  0.0,  4.0, -10.0,  0.0, -2.0),
+    "low":           (15.0,  0.0, -1.0, -10.0,  0.0,  2.0),
+    "diagonal":      (12.0, 10.0,  1.5,  -8.0, -8.0,  0.0),
+    # ── Slow approach ──
+    "head_on_slow":  (15.0,  0.0,  1.5,  -5.0,  0.0,  0.0),
+    "lateral_slow":  (15.0,  5.0,  1.5,  -4.0, -2.0,  0.0),
+    "diagonal_slow": (12.0, 10.0,  1.5,  -4.0, -4.0,  0.0),
+    # ── Fast approach ──
+    "head_on_fast":  (15.0,  0.0,  1.5, -18.0,  0.0,  0.0),
+    "lateral_fast":  (15.0,  5.0,  1.5, -15.0, -6.0,  0.0),
+    "diagonal_fast": (12.0, 10.0,  1.5, -12.0, -12.0,  0.0),
 }
+
+# Environments available for domain randomization
+# Keys must match entries in pegasus.simulator.params.SIMULATION_ENVIRONMENTS
+RANDOM_ENVIRONMENTS = [
+    "Black Gridroom",
+    "Hospital",
+    "Office",
+    "Simple Room",
+    "Warehouse",
+    "Flat Plane",
+]
 
 
 def stage(msg):
@@ -362,8 +388,11 @@ class HoverEvasionBackend(Backend):
                 if self.frame_dir and not getattr(self, "_evasion_only", False):
                     bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
                     path = os.path.join(self.frame_dir,
-                                        f"frame_{self.frame_count:06d}.bmp")
-                    cv2.imwrite(path, bgr)
+                                        f"frame_{self.frame_count:06d}{FRAME_FMT}")
+                    if FRAME_FMT == ".jpg":
+                        cv2.imwrite(path, bgr, [cv2.IMWRITE_JPEG_QUALITY, FRAME_QUALITY])
+                    else:
+                        cv2.imwrite(path, bgr)
                 self.frame_count += 1
                 if self.frame_count % 60 == 0:
                     tqdm.write(f"  captured frame {self.frame_count}")
@@ -456,16 +485,21 @@ def run_simulation(args):
 
     timeline = omni.timeline.get_timeline_interface()
     pg = PegasusInterface()
-    # Match rendering rate to camera FPS (physics stays at 250 Hz internally)
+    # Match both physics and rendering to FPS (1000 Hz) — no SuperSloMo needed
+    pg._world_settings["physics_dt"]   = 1.0 / FPS
     pg._world_settings["rendering_dt"] = 1.0 / FPS
     pg._world = World(**pg._world_settings)
     world = pg.world
 
-    stage("Loading environment")
-    # Black Gridroom: static grid pattern, no dynamic/animated elements.
-    # Curved Gridroom had animated sky/lighting that caused massive background
-    # event spikes (~580 K events/bin) unrelated to the looming obstacle.
-    pg.load_environment(SIMULATION_ENVIRONMENTS["Black Gridroom"])
+    # ── Environment selection ─────────────────────────────────────────────────
+    import random
+    if getattr(args, "randomize_env", False):
+        env_name = random.choice(RANDOM_ENVIRONMENTS)
+        tqdm.write(f"  [domain randomization] Selected environment: {env_name}")
+    else:
+        env_name = "Black Gridroom"
+    stage(f"Loading environment: {env_name}")
+    pg.load_environment(SIMULATION_ENVIRONMENTS[env_name])
     done()
 
     # ── Generate a high-contrast checkerboard texture for the obstacle ──────
@@ -601,8 +635,11 @@ def run_simulation(args):
                 rgb = ext_rgb_ann.get_data()
                 if rgb is not None and rgb.size > 0:
                     bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
-                    cv2.imwrite(
-                        os.path.join(EXT_FRAME_DIR, f"frame_{step:06d}.bmp"), bgr)
+                    ext_path = os.path.join(EXT_FRAME_DIR, f"frame_{step:06d}{FRAME_FMT}")
+                    if FRAME_FMT == ".jpg":
+                        cv2.imwrite(ext_path, bgr, [cv2.IMWRITE_JPEG_QUALITY, FRAME_QUALITY])
+                    else:
+                        cv2.imwrite(ext_path, bgr)
             except Exception:
                 pass
 
@@ -681,15 +718,24 @@ def run_simulation(args):
 
         # Prefer external (3rd-person) frames if available, fall back to onboard
         ext_frames = sorted(
-            f for f in os.listdir(EXT_FRAME_DIR) if f.endswith(".bmp")
+            f for f in os.listdir(EXT_FRAME_DIR)
+            if f.endswith(FRAME_FMT) or f.endswith(".bmp")
         ) if os.path.isdir(EXT_FRAME_DIR) else []
 
         if ext_frames:
-            video_path = f"/tmp/evasion_{run_name}_ext_video.mp4"
+            video_path = os.path.join(DATA_DIR, f"evasion_{run_name}_ext_video.mp4")
             make_video(EXT_FRAME_DIR, video_path, annotation=annotation)
         if backend.frame_count > 0:
-            video_path = f"/tmp/evasion_{run_name}_video.mp4"
+            video_path = os.path.join(DATA_DIR, f"evasion_{run_name}_video.mp4")
             make_video(FRAME_DIR, video_path, annotation=annotation)
+
+        # In preview mode, clean up frame dirs — only the MP4 matters
+        if getattr(args, "preview", False):
+            import shutil
+            for d in (FRAME_DIR, EXT_FRAME_DIR):
+                if os.path.isdir(d):
+                    shutil.rmtree(d)
+                    print(f"  [preview] Cleaned up {d}")
 
     simulation_app.close()
     return backend.frame_count
@@ -745,7 +791,8 @@ def make_video(frame_dir: str, out_path: str,
     """
     import subprocess
 
-    frames = sorted(f for f in os.listdir(frame_dir) if f.endswith(".bmp"))
+    frames = sorted(f for f in os.listdir(frame_dir)
+                    if f.endswith(FRAME_FMT) or f.endswith(".bmp"))
     if not frames:
         print(f"[WARN] No frames found in {frame_dir} — skipping video")
         return False
@@ -763,7 +810,7 @@ def make_video(frame_dir: str, out_path: str,
     cmd = [
         "ffmpeg", "-y",
         "-framerate", str(in_fps),
-        "-i", os.path.join(frame_dir, "frame_%06d.bmp"),
+        "-i", os.path.join(frame_dir, f"frame_%06d{FRAME_FMT}"),
         "-vf", ",".join(vf_parts),
         "-c:v", "libx264", "-crf", "22", "-preset", "fast",
         "-pix_fmt", "yuv420p",
@@ -781,18 +828,12 @@ def make_video(frame_dir: str, out_path: str,
 # ── Stage 2: v2e conversion ───────────────────────────────────────────────────
 
 def run_v2e(num_frames):
-    stage(f"Converting {num_frames} frames to events via v2e (SuperSloMo)")
+    stage(f"Converting {num_frames} frames to events via v2e (native {FPS} FPS, no SuperSloMo)")
     os.makedirs(EVENT_DIR, exist_ok=True)
 
-    slomo_ckpt = os.path.expanduser("~/v2e/input/SuperSloMo39.ckpt")
-    if not os.path.exists(slomo_ckpt):
-        print(f"[WARN] SuperSloMo checkpoint not found at {slomo_ckpt}")
-        print("       Run with --disable_slomo or download with:")
-        print("       gdown --fuzzy 'https://drive.google.com/file/d/"
-              "19YDLygMkXey4ePj8_W54BVlkKxTxWiEk' -O ~/v2e/input/SuperSloMo39.ckpt")
-        slomo_flag = "--disable_slomo"
-    else:
-        slomo_flag = f"--slomo_model {slomo_ckpt}"
+    # At 1000 FPS native rendering, SuperSloMo interpolation is unnecessary.
+    # Events are derived directly from physically-rendered frames.
+    slomo_flag = "--disable_slomo"
 
     cmd = (
         f"v2e "
@@ -853,7 +894,7 @@ if __name__ == "__main__":
     parser.add_argument("--v2e-only", action="store_true",
                         help="Run v2e only (frames must already exist)")
 
-    # Per-run name: sets output dirs to /tmp/evasion_<name>_{frames,meta,events}
+    # Per-run name: sets output dirs to data/evasion_<name>_{frames,meta,events}
     parser.add_argument("--name", default=None,
                         help="Run name (e.g. 'head_on', 'lateral') — sets output dirs")
 
@@ -882,19 +923,42 @@ if __name__ == "__main__":
                         help="Add a fixed external (third-person) camera showing "
                              "both drone and obstacle (requires --video)")
 
+    # Domain randomization
+    parser.add_argument("--randomize_env", action="store_true",
+                        help="Randomly select simulation environment from a diverse set "
+                             "(domain randomization for sim-to-real transfer)")
+
+    # Preview mode: quick low-res render for visual verification
+    parser.add_argument("--preview", action="store_true",
+                        help="Quick preview: 30 FPS, 6s, ext camera + auto MP4. "
+                             "Use to verify scene layout before full data generation.")
+
     args = parser.parse_args()
+
+    # ── Preview mode overrides ────────────────────────────────────────────────
+    if args.preview:
+        FPS = 30
+        SIM_DT = 1.0 / FPS
+        WARMUP_STEPS = int(2.0 * FPS)   # 2s warmup
+        TOTAL_STEPS  = int(6.0 * FPS)   # 6s total
+        FRAME_FMT    = ".jpg"
+        args.ext_camera = True
+        args.video      = True
+        args.sim_only   = True
+        print(f"[PREVIEW MODE] 30 FPS, 6s, ext camera + auto video")
 
     # Override output dirs based on --name (or auto-derive from --profile)
     run_name = args.name or args.profile or "default"
-    FRAME_DIR     = f"/tmp/evasion_{run_name}_frames"
-    META_DIR      = f"/tmp/evasion_{run_name}_meta"
-    EVENT_DIR     = f"/tmp/evasion_{run_name}_events"
-    EXT_FRAME_DIR = f"/tmp/evasion_{run_name}_extframes"
+    FRAME_DIR     = os.path.join(DATA_DIR, f"evasion_{run_name}_frames")
+    META_DIR      = os.path.join(DATA_DIR, f"evasion_{run_name}_meta")
+    EVENT_DIR     = os.path.join(DATA_DIR, f"evasion_{run_name}_events")
+    EXT_FRAME_DIR = os.path.join(DATA_DIR, f"evasion_{run_name}_extframes")
     print(f"Output dirs: frames={FRAME_DIR}  meta={META_DIR}  events={EVENT_DIR}")
 
     if args.v2e_only:
         run_v2e(len([f for f in os.listdir(FRAME_DIR)
-                     if f.endswith(".bmp")]) if os.path.exists(FRAME_DIR) else 0)
+                     if f.endswith(FRAME_FMT) or f.endswith(".bmp")])
+                if os.path.exists(FRAME_DIR) else 0)
     elif args.sim_only:
         run_simulation(args)
     else:

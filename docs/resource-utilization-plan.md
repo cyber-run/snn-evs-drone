@@ -19,11 +19,11 @@ Goal: fill the GPU and shorten wall-clock time per run.
 **Example — higher throughput single run:**
 ```bash
 python snn/training/train_lgmd.py \
-  --h5 /tmp/evasion_head_on_events/events.h5 \
-       /tmp/evasion_lateral_events/events.h5 \
-       /tmp/evasion_high_events/events.h5 \
-       /tmp/evasion_low_events/events.h5 \
-  --val_h5 /tmp/evasion_diagonal_events/events.h5 \
+  --h5 data/evasion_head_on_events/events.h5 \
+       data/evasion_lateral_events/events.h5 \
+       data/evasion_high_events/events.h5 \
+       data/evasion_low_events/events.h5 \
+  --val_h5 data/evasion_diagonal_events/events.h5 \
   --augment --save results/lgmd_weights.pt \
   --batch 128 --num_workers 8 --lr 4e-3 --epochs 200
 ```
@@ -45,11 +45,11 @@ Goal: use more GPU and RAM for a **better model** or **more data**, not just spe
 **Example — higher resolution + more windows:**
 ```bash
 python snn/training/train_lgmd.py \
-  --h5 /tmp/evasion_head_on_events/events.h5 \
-       /tmp/evasion_lateral_events/events.h5 \
-       /tmp/evasion_high_events/events.h5 \
-       /tmp/evasion_low_events/events.h5 \
-  --val_h5 /tmp/evasion_diagonal_events/events.h5 \
+  --h5 data/evasion_head_on_events/events.h5 \
+       data/evasion_lateral_events/events.h5 \
+       data/evasion_high_events/events.h5 \
+       data/evasion_low_events/events.h5 \
+  --val_h5 data/evasion_diagonal_events/events.h5 \
   --augment --save results/lgmd_weights_hr.pt \
   --pool 2 --n_bins 75 --stride_bins 5 --batch 64 \
   --num_workers 8 --epochs 300

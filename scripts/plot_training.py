@@ -10,7 +10,7 @@ Usage:
     # After training (requires results/lgmd_pearson_sw.csv):
     python scripts/plot_training.py \
         --csv  results/lgmd_pearson_sw.csv \
-        --h5   /tmp/evasion_head_on_events/events.h5 \
+        --h5   data/evasion_head_on_events/events.h5 \
         --weights results/lgmd_pearson_sw.pt \
         --out  results/
 

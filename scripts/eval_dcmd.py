@@ -10,7 +10,7 @@ over the full event stream and plots:
 
 Usage:
     python scripts/eval_dcmd.py \
-        --h5  /tmp/evasion_head_on_events/events.h5 \
+        --h5  data/evasion_head_on_events/events.h5 \
         --weights results/lgmd_weights.pt \
         --out results/eval_dcmd_head_on.png
 """
